@@ -353,6 +353,10 @@ KiQueueReadyThread(
     Thread->State = Ready;
     Thread->NextProcessor = Prcb->Number;
     Thread->WaitTime = KeTickCount.LowPart;
+#if KI_THREAD_HANDOFF_USES_RUNNING
+    if (KiEevdfEnabled)
+        KiEevdfReadyThread(Thread, FALSE);
+#endif
 
     KiAssertReadyQueue(Prcb, Priority);
 
@@ -421,6 +425,10 @@ KiDeferredReadyThread(
         Thread->State = Standby;
         Thread->NextProcessor = Processor;
         Prcb->NextThread = Thread;
+#if KI_THREAD_HANDOFF_USES_RUNNING
+        if (KiEevdfEnabled)
+            KiEevdfReadyThread(Thread, FALSE);
+#endif
 
         KiQueueReadyThread(Displaced, Prcb);
         return;
@@ -444,6 +452,10 @@ KiDeferredReadyThread(
         Thread->State = Standby;
         Thread->NextProcessor = Processor;
         Prcb->NextThread = Thread;
+#if KI_THREAD_HANDOFF_USES_RUNNING
+        if (KiEevdfEnabled)
+            KiEevdfReadyThread(Thread, FALSE);
+#endif
         KiMarkProcessorBusy(Prcb);
         Wake = (Current != Prcb->IdleThread) || KiArchIdleProcessorNeedsWake(Prcb);
 
@@ -626,6 +638,10 @@ KiStealReadyThread(
                 /* Off that queue for good before its lock goes: nothing may unlink it again there */
                 Thread->NextProcessor = Prcb->Number;
                 Thread->State = Standby;
+#if KI_THREAD_HANDOFF_USES_RUNNING
+                if (KiEevdfEnabled)
+                    KiEevdfReadyThread(Thread, FALSE);
+#endif
 
                 KiAssertReadyQueue(Remote, Priority);
                 KiReleasePrcbLock(Remote);
@@ -902,6 +918,10 @@ KiSetPriorityThread(
 
             OldPriority = Thread->Priority;
             Thread->Priority = (SCHAR)Priority;
+#if KI_THREAD_HANDOFF_USES_RUNNING
+            if (KiEevdfEnabled && State == Standby)
+                KiEevdfReadyThread(Thread, FALSE);
+#endif
 
             /*
              * Lowering a thread that holds a processor can make a queued one
@@ -1193,7 +1213,14 @@ KiQuantumEnd(VOID)
     }
 
     if (Thread != Prcb->IdleThread)
+    {
         KiCheckProcessorUnpark(Thread);
+        if (KiEevdfEnabled && Thread->Priority > LOW_PRIORITY && Thread->Priority < LOW_REALTIME_PRIORITY)
+        {
+            KiEevdfAccountThread(Thread, (ULONGLONG)InterlockedCompareExchange64((PLONG64)&Thread->CycleTime, 0, 0));
+            KiEevdfReadyThread(Thread, TRUE);
+        }
+    }
 
     /*
      * A preemption that was deferred is honoured here. This is the point the
@@ -1235,6 +1262,17 @@ KiQuantumEnd(VOID)
                 Prcb->NextThread = Next;
                 Thread->Preempted = TRUE;
             }
+#if KI_THREAD_HANDOFF_USES_RUNNING
+            else if (KiEevdfEnabled && !Thread->DeferPreemption &&
+                     KiEevdfTrySelectQuantum(Prcb, Thread, &Next) && Next != Thread)
+            {
+                KiReadyQueueRemove(Prcb, Next, Next->Priority);
+                Next->State = Standby;
+                Next->NextProcessor = Prcb->Number;
+                Prcb->NextThread = Next;
+                Thread->Preempted = TRUE;
+            }
+#endif
         }
         KiReleasePrcbLock(Prcb);
         KiSwitchToStandbyThread(Prcb, Thread);
@@ -1264,7 +1302,20 @@ KiQuantumEnd(VOID)
 
     if (Prcb->NextThread == NULL)
     {
-        Next = KiSelectReadyThread(Thread->Priority, Prcb);
+        Next = NULL;
+#if KI_THREAD_HANDOFF_USES_RUNNING
+        if (KiEevdfEnabled && KiEevdfTrySelectQuantum(Prcb, Thread, &Next))
+        {
+            if (Next == Thread)
+                Next = NULL;
+            else
+                KiReadyQueueRemove(Prcb, Next, Next->Priority);
+        }
+        else
+#endif
+        {
+            Next = KiSelectReadyThread(Thread->Priority, Prcb);
+        }
         if (Next != NULL)
         {
             Next->State = Standby;

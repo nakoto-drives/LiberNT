@@ -1425,6 +1425,57 @@ NTAPI
 KiAdjustQuantumThread(
     _In_ PKTHREAD Thread);
 
+extern BOOLEAN KiEevdfEnabled;
+#define KI_EEVDF_QUANTUM_BASE 6
+
+BOOLEAN
+NTAPI
+KiEevdfCreateThreadState(
+    _In_ PKTHREAD Thread);
+
+VOID
+NTAPI
+KiEevdfDeleteThreadState(
+    _In_ PKTHREAD Thread);
+
+VOID
+FASTCALL
+KiEevdfAccountThread(
+    _In_ PKTHREAD Thread,
+    _In_ ULONGLONG Cycles);
+
+VOID
+FASTCALL
+KiEevdfCompleteThreadSwitch(
+    _In_ PKTHREAD Thread,
+    _In_ ULONGLONG Cycles);
+
+VOID
+FASTCALL
+KiEevdfReadyThread(
+    _In_ PKTHREAD Thread,
+    _In_ BOOLEAN SwitchComplete);
+
+VOID
+FASTCALL
+KiEevdfSetProcessForeground(
+    _In_ PKPROCESS Process,
+    _In_ BOOLEAN Foreground);
+
+BOOLEAN
+FASTCALL
+KiEevdfTrySelectQuantum(
+    _In_ PKPRCB Prcb,
+    _In_ PKTHREAD Current,
+    _Out_ PKTHREAD *Selected);
+
+BOOLEAN
+FASTCALL
+KiEevdfTrySelectReady(
+    _In_ PKPRCB Prcb,
+    _In_ KPRIORITY Priority,
+    _Out_ PKTHREAD *Selected);
+
 VOID
 FASTCALL
 KiDeferredReadyThread(

@@ -126,6 +126,28 @@ ExpFindLoadOption(
     return NULL;
 }
 
+CODE_SEG("INIT")
+static
+BOOLEAN
+ExpHasExactLoadOption(
+    _In_opt_ PCSTR Options,
+    _In_ PCSTR Name)
+{
+    PCSTR Value;
+
+    if (*Name == ANSI_NULL)
+        return FALSE;
+    while ((Value = ExpFindLoadOption(Options, Name)) != NULL)
+    {
+        if (*Value == ANSI_NULL || *Value == ' ' || *Value == '/')
+            return TRUE;
+        while (*Value != ANSI_NULL && *Value != ' ' && *Value != '/')
+            Value++;
+        Options = Value;
+    }
+    return FALSE;
+}
+
 /* Only "Terminal Server" is a documented product suite name, and a workstation runs it for a single user */
 CODE_SEG("INIT")
 static
@@ -164,6 +186,16 @@ ExpReadLoadOptions(
 {
     PCSTR Options = LoaderBlock->LoadOptions;
     PCSTR Value;
+
+    if (ExpHasExactLoadOption(Options, "EEVDF"))
+#if KI_THREAD_HANDOFF_USES_RUNNING
+    {
+        KiEevdfEnabled = TRUE;
+        DPRINT1("EEVDF scheduler policy enabled\n");
+    }
+#else
+        DPRINT1("EEVDF requires the processor handoff protocol\n");
+#endif
 
     if (ExpFindLoadOption(Options, "MININT") != NULL)
     {

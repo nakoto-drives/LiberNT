@@ -587,6 +587,8 @@ PspSetProcessPriorityClass(
                                             PsProcessPriorityBackground,
                                             &Quantum);
     KeSetPriorityAndQuantumProcess(&Process->Pcb, Priority, Quantum);
+    if (KiEevdfEnabled)
+        KiEevdfSetProcessForeground(&Process->Pcb, FALSE);
 
     return STATUS_SUCCESS;
 }
@@ -617,6 +619,10 @@ PsSetProcessPriorityByClass(
 
     Priority = PspComputeQuantumAndPriority(Process, Type, &Quantum);
     KeSetPriorityAndQuantumProcess(&Process->Pcb, Priority, Quantum);
+    if (KiEevdfEnabled)
+        KiEevdfSetProcessForeground(&Process->Pcb,
+                                    Type == PsProcessPriorityForeground &&
+                                    Process->PriorityClass == PROCESS_PRIORITY_CLASS_NORMAL);
 }
 
 /*

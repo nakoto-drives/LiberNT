@@ -1,0 +1,124 @@
+/*
+ * PROJECT:     LiberNT host-native tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Check EEVDF accounting at the context-switch handoff
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+#include <ntoskrnl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "eevdf_state.h"
+
+#define FORCEINLINE
+#define KI_ARCH_HANDOFF_ACTIVE HandoffActive
+#define CHECK(Condition) do { if (!(Condition)) { \
+    fprintf(stderr, "line %d: %s\n", __LINE__, #Condition); exit(1); \
+} } while (0)
+#define KeMemoryBarrier() ((void)0)
+
+ULONG KiCyclesPerClockQuantum = 10;
+
+static KPRCB Prcb;
+static BOOLEAN HandoffActive = TRUE;
+static PKTHREAD Outgoing;
+static int ThreadLock;
+static int ExpectHandoff;
+static int DeferredCount;
+static int ReapedCount;
+
+KIRQL KeRaiseIrqlToSynchLevel(void) { return DISPATCH_LEVEL; }
+void KeLowerIrql(KIRQL OldIrql) { CHECK(OldIrql == DISPATCH_LEVEL); }
+void KeAcquireSpinLockAtDpcLevel(KSPIN_LOCK *Lock)
+{
+    CHECK(*Lock == 0);
+    if (ExpectHandoff) CHECK(ThreadLock && Prcb.PrcbLock && Outgoing->Running);
+    *Lock = 1;
+}
+void KeReleaseSpinLockFromDpcLevel(KSPIN_LOCK *Lock) { CHECK(*Lock == 1); *Lock = 0; }
+void *ExAllocatePoolWithTag(int Pool, size_t Size, ULONG Tag)
+{
+    (void)Pool;
+    (void)Tag;
+    return malloc(Size);
+}
+void ExFreePoolWithTag(void *Pointer, ULONG Tag) { (void)Tag; free(Pointer); }
+static PKPRCB KeGetCurrentPrcb(void) { return &Prcb; }
+static void KiAcquireThreadLock(PKTHREAD Thread) { CHECK(Thread == Outgoing); CHECK(!ThreadLock); ThreadLock = 1; }
+static void KiReleaseThreadLock(PKTHREAD Thread) { CHECK(Thread == Outgoing); CHECK(ThreadLock); ThreadLock = 0; }
+static void KiAcquirePrcbLock(PKPRCB P) { CHECK(P == &Prcb); CHECK(!P->PrcbLock); P->PrcbLock = 1; }
+static void KiReleasePrcbLock(PKPRCB P) { CHECK(P == &Prcb); CHECK(P->PrcbLock); P->PrcbLock = 0; }
+static void KiDeferredReadyThread(PKTHREAD Thread) { CHECK(Thread == Outgoing); DeferredCount++; }
+static void KiRequestDispatchInterrupt(PKPRCB P) { CHECK(P == &Prcb); }
+static void KiQueueThreadForReaping(PKTHREAD Thread) { CHECK(Thread == Outgoing); ReapedCount++; }
+
+@FUNCTION@
+
+int main(void)
+{
+    KTHREAD OldThread = {0}, NewThread = {0}, Peer = {0};
+    PKI_EEVDF_THREAD_STATE State;
+    KIRQL OldIrql;
+
+    Outgoing = &OldThread;
+    OldThread.Running = TRUE;
+    OldThread.State = Ready;
+    OldThread.CycleTime = 10;
+    CHECK(KiEevdfCreateThreadState(&OldThread));
+    KiEevdfEnabled = TRUE;
+    ExpectHandoff = TRUE;
+    KiCompleteThreadSwitch(&OldThread, &NewThread);
+    ExpectHandoff = FALSE;
+    CHECK(!OldThread.Running && NewThread.Running && !ThreadLock && !Prcb.PrcbLock);
+    OldIrql = KiEevdfAcquireStateLock();
+    State = KiEevdfFindThreadStateLocked(&OldThread);
+    CHECK(State != NULL && State->AccountedCycles == 10 && State->Entity.Clock.VirtualRuntime == 10240);
+    KiEevdfReleaseStateLock(OldIrql);
+    OldThread.Priority = Peer.Priority = 8;
+    OldThread.QuantumReset = 6;
+    CHECK(KiEevdfCreateThreadState(&Peer));
+    CHECK(KiEevdfPlaceThread(&Peer, 0, 8, 1024, 60));
+    CHECK(KiEevdfPlaceThread(&OldThread, 0, 8, 1024, 60));
+
+    OldThread.Running = TRUE;
+    OldThread.State = Ready;
+    OldThread.CycleTime = 11;
+    ExpectHandoff = TRUE;
+    KiCompleteThreadSwitch(&OldThread, &NewThread);
+    ExpectHandoff = FALSE;
+    OldIrql = KiEevdfAcquireStateLock();
+    CHECK(State->AccountedCycles == 11 && State->Entity.Domain != NULL);
+    CHECK(State->Initialized && State->Entity.Clock.VirtualRuntime == (UINT64_C(1) << 60) + 1);
+    KiEevdfReleaseStateLock(OldIrql);
+
+    OldThread.Running = TRUE;
+    OldThread.State = DeferredReady;
+    OldThread.ReadyTransition = TRUE;
+    OldThread.CycleTime = 12;
+    ExpectHandoff = TRUE;
+    KiCompleteThreadSwitch(&OldThread, &NewThread);
+    ExpectHandoff = FALSE;
+    CHECK(!OldThread.Running && !OldThread.ReadyTransition && DeferredCount == 1);
+    OldIrql = KiEevdfAcquireStateLock();
+    State = KiEevdfFindThreadStateLocked(&OldThread);
+    CHECK(State->AccountedCycles == 12 && State->Entity.Domain == NULL);
+    CHECK(State->Entity.Lag == -1 && !State->Initialized);
+    KiEevdfReleaseStateLock(OldIrql);
+    KiEevdfDeleteThreadState(&Peer);
+
+    KiEevdfEnabled = FALSE;
+    OldThread.Running = TRUE;
+    OldThread.State = Terminated;
+    OldThread.CycleTime = 15;
+    HandoffActive = FALSE;
+    KiCompleteThreadSwitch(&OldThread, &NewThread);
+    CHECK(OldThread.Running && ReapedCount == 0);
+    HandoffActive = TRUE;
+    KiCompleteThreadSwitch(&OldThread, &NewThread);
+    CHECK(!OldThread.Running && ReapedCount == 1);
+    OldIrql = KiEevdfAcquireStateLock();
+    CHECK(KiEevdfFindThreadStateLocked(&OldThread)->AccountedCycles == 12);
+    KiEevdfReleaseStateLock(OldIrql);
+    KiEevdfDeleteThreadState(&OldThread);
+    return 0;
+}

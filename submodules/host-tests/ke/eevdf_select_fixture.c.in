@@ -1,0 +1,134 @@
+/*
+ * PROJECT:     LiberNT host-native tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Exercise the live ready-thread selection path
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+#include <ntoskrnl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "eevdf_dispatch.h"
+#include "eevdf_state.h"
+
+#define FORCEINLINE
+#define CHECK(Condition) do { if (!(Condition)) { \
+    fprintf(stderr, "line %d: %s\n", __LINE__, #Condition); exit(1); \
+} } while (0)
+
+ULONG KiCyclesPerClockQuantum = 10;
+
+KIRQL KeRaiseIrqlToSynchLevel(void) { return DISPATCH_LEVEL; }
+void KeLowerIrql(KIRQL OldIrql) { CHECK(OldIrql == DISPATCH_LEVEL); }
+void KeAcquireSpinLockAtDpcLevel(KSPIN_LOCK *Lock) { CHECK(*Lock == 0); *Lock = 1; }
+void KeReleaseSpinLockFromDpcLevel(KSPIN_LOCK *Lock) { CHECK(*Lock == 1); *Lock = 0; }
+void *ExAllocatePoolWithTag(int Pool, size_t Size, ULONG Tag)
+{
+    (void)Pool;
+    (void)Tag;
+    return malloc(Size);
+}
+void ExFreePoolWithTag(void *Pointer, ULONG Tag)
+{
+    (void)Tag;
+    free(Pointer);
+}
+
+static int IsListEmpty(PLIST_ENTRY Head) { return Head->Flink == Head; }
+static void BitScanReverse(ULONG *Index, ULONG Value)
+{
+    ULONG Bit = 0;
+    CHECK(Value != 0);
+    while ((Value >>= 1) != 0) Bit++;
+    *Index = Bit;
+}
+static void KiReadyQueueRemove(PKPRCB Prcb, PKTHREAD Thread, KPRIORITY Priority)
+{
+    PLIST_ENTRY Entry = &Thread->WaitListEntry;
+    Entry->Blink->Flink = Entry->Flink;
+    Entry->Flink->Blink = Entry->Blink;
+    if (IsListEmpty(&Prcb->DispatcherReadyListHead[Priority]))
+        Prcb->ReadySummary &= ~PRIORITY_MASK(Priority);
+}
+static void KiInsertDeferredReadyList(PKTHREAD Thread) { Thread->State = DeferredReady; }
+
+@FUNCTION@
+
+static void Insert(PKPRCB Prcb, PKTHREAD Thread)
+{
+    PLIST_ENTRY Head = &Prcb->DispatcherReadyListHead[Thread->Priority];
+    PLIST_ENTRY Entry = &Thread->WaitListEntry;
+    Entry->Blink = Head->Blink;
+    Entry->Flink = Head;
+    Head->Blink->Flink = Entry;
+    Head->Blink = Entry;
+    Prcb->ReadySummary |= PRIORITY_MASK(Thread->Priority);
+}
+
+int main(void)
+{
+    KPRCB Prcb = {0};
+    KTHREAD Threads[3] = {0};
+    unsigned Index;
+    KIRQL OldIrql;
+
+    Prcb.PrcbLock = 1;
+    for (Index = 0; Index < 32; Index++)
+    {
+        Prcb.DispatcherReadyListHead[Index].Flink = &Prcb.DispatcherReadyListHead[Index];
+        Prcb.DispatcherReadyListHead[Index].Blink = &Prcb.DispatcherReadyListHead[Index];
+    }
+    for (Index = 0; Index < 3; Index++)
+    {
+        PKI_EEVDF_THREAD_STATE State;
+        Threads[Index].State = Ready;
+        Threads[Index].Priority = 8;
+        Threads[Index].BasePriority = 8;
+        Threads[Index].Affinity = 1;
+        CHECK(KiEevdfCreateThreadState(&Threads[Index]));
+        OldIrql = KiEevdfAcquireStateLock();
+        State = KiEevdfFindThreadStateLocked(&Threads[Index]);
+        CHECK(State != NULL);
+        State->Initialized = TRUE;
+        State->Priority = 8;
+        State->Processor = 0;
+        State->Entity.Clock.VirtualRuntime = (Index + 1) * 10;
+        State->Entity.Deadline = 100 / (Index + 1);
+        KiEevdfReleaseStateLock(OldIrql);
+        Insert(&Prcb, &Threads[Index]);
+    }
+    KiEevdfEnabled = TRUE;
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[1]);
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[0]);
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[2]);
+    CHECK(KiSelectReadyThread(0, &Prcb) == NULL);
+    for (Index = 0; Index < 3; Index++) Insert(&Prcb, &Threads[Index]);
+    KiEevdfEnabled = FALSE;
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[0]);
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[1]);
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[2]);
+
+    for (Index = 0; Index < 3; Index++) Insert(&Prcb, &Threads[Index]);
+    KiEevdfEnabled = TRUE;
+    Threads[1].Affinity = 0;
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[0]);
+    CHECK(Threads[1].State == DeferredReady);
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[2]);
+    Threads[1].Affinity = 1;
+    Threads[1].State = Ready;
+
+    for (Index = 0; Index < 3; Index++) Insert(&Prcb, &Threads[Index]);
+    OldIrql = KiEevdfAcquireStateLock();
+    KiEevdfFindThreadStateLocked(&Threads[1])->Initialized = FALSE;
+    KiEevdfReleaseStateLock(OldIrql);
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[0]);
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[1]);
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[2]);
+
+    Threads[0].Priority = 20;
+    Threads[0].BasePriority = 20;
+    Insert(&Prcb, &Threads[0]);
+    CHECK(KiSelectReadyThread(0, &Prcb) == &Threads[0]);
+    for (Index = 0; Index < 3; Index++) KiEevdfDeleteThreadState(&Threads[Index]);
+    return 0;
+}

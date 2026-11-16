@@ -1,0 +1,70 @@
+/*
+ * PROJECT:     LiberNT host-native tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Exercise i386's opt-in running-thread handoff
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+#define EEVDF_CUSTOM_LEAVING
+#include <ntoskrnl.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define FORCEINLINE
+#define IN
+#define KI_THREAD_HANDOFF_USES_RUNNING 1
+#define KI_ARCH_HANDOFF_ACTIVE KiEevdfEnabled
+#define KeMemoryBarrier() ((void)0)
+#define YieldProcessor() CHECK(0)
+#define CHECK(Condition) do { if (!(Condition)) { \
+    fprintf(stderr, "line %d: %s\n", __LINE__, #Condition); exit(1); \
+} } while (0)
+
+static BOOLEAN KiEevdfEnabled;
+static KPRCB Prcb;
+static PKPRCB KiProcessorBlock[1] = {&Prcb};
+static ULONG KeNumberProcessors = 1;
+static unsigned ThreadLock, Charges, Deferred;
+static PKPRCB KeGetCurrentPrcb(void) { return &Prcb; }
+static void KiAcquirePrcbLock(PKPRCB P) { CHECK(!P->PrcbLock); P->PrcbLock = 1; }
+static void KiReleasePrcbLock(PKPRCB P) { CHECK(P->PrcbLock); P->PrcbLock = 0; }
+static void KiAcquireThreadLock(PKTHREAD T) { (void)T; CHECK(!ThreadLock); ThreadLock = 1; }
+static void KiReleaseThreadLock(PKTHREAD T) { (void)T; CHECK(ThreadLock); ThreadLock = 0; }
+static void KiEevdfCompleteThreadSwitch(PKTHREAD T, ULONGLONG Cycles)
+{
+    CHECK(T->Running && ThreadLock && Prcb.PrcbLock && Cycles == 20);
+    Charges++;
+}
+static void KiDeferredReadyThread(PKTHREAD T) { CHECK(!T->Running && !ThreadLock && !Prcb.PrcbLock); Deferred++; }
+static void KiRequestDispatchInterrupt(PKPRCB P) { (void)P; }
+static void KiQueueThreadForReaping(PKTHREAD T) { (void)T; CHECK(0); }
+
+@WAIT@
+
+@LEAVING@
+
+@DEFER@
+
+@COMPLETE@
+
+int main(void)
+{
+    KTHREAD Old = {0}, New = {0};
+
+    Old.Running = TRUE;
+    Old.State = DeferredReady;
+    Old.CycleTime = 20;
+    CHECK(!KiThreadLeavingProcessor(&Old));
+    KiWaitForThreadSwapOut(&Old);
+    CHECK(!KiDeferReadyWhileLeavingProcessor(&Old) && !Old.ReadyTransition);
+    KiCompleteThreadSwitch(&Old, &New);
+    CHECK(Old.Running && !New.Running && !Charges && !Deferred);
+    KiEevdfEnabled = TRUE;
+    CHECK(KiThreadLeavingProcessor(&Old));
+    CHECK(KiDeferReadyWhileLeavingProcessor(&Old) && Old.ReadyTransition);
+    KiCompleteThreadSwitch(&Old, &New);
+    CHECK(!Old.Running && New.Running && !Old.ReadyTransition && Charges == 1 && Deferred == 1);
+    KiWaitForThreadSwapOut(&Old);
+    CHECK(!KiThreadLeavingProcessor(&Old));
+    return 0;
+}

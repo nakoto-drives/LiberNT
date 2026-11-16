@@ -221,6 +221,10 @@ list(APPEND SOURCE
     ${REACTOS_SOURCE_DIR}/ntos/ke/arcconfig.c
     ${REACTOS_SOURCE_DIR}/ntos/ke/balance.c
     ${REACTOS_SOURCE_DIR}/ntos/ke/clockint.c
+    ${REACTOS_SOURCE_DIR}/ntos/ke/eevdf_dispatch.c
+    ${REACTOS_SOURCE_DIR}/ntos/ke/eevdf_domain.c
+    ${REACTOS_SOURCE_DIR}/ntos/ke/eevdf_math.c
+    ${REACTOS_SOURCE_DIR}/ntos/ke/eevdf_state.c
     ${REACTOS_SOURCE_DIR}/ntos/ke/cpuctrl.c
     ${REACTOS_SOURCE_DIR}/ntos/ke/crash.c
     ${REACTOS_SOURCE_DIR}/ntos/ke/dispatch.c

@@ -341,6 +341,14 @@ PspCreateThread(
      */
     ObReferenceObject(Process);
 
+    if (KiEevdfEnabled && !KiEevdfCreateThreadState(&Thread->Tcb))
+    {
+        if (Teb != NULL) MmDeleteTeb(Process, Teb);
+        ObDereferenceObject(Thread);
+        ObDereferenceObject(Process);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
     /*
      * Whoever brings the active thread count up from nothing is the first
      * thread, and only the first thread may enter a process that is new.

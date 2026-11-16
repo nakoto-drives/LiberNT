@@ -1,0 +1,98 @@
+/*
+ * PROJECT:     LiberNT host-native tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Exercise domain placement through the live ready-queue insertion
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+#include <ntoskrnl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "eevdf_state.h"
+
+#define KI_THREAD_HANDOFF_USES_RUNNING 1
+#define CHECK(Condition) do { if (!(Condition)) { \
+    fprintf(stderr, "line %d: %s\n", __LINE__, #Condition); exit(1); \
+} } while (0)
+
+ULONG KiCyclesPerClockQuantum = 10;
+struct { ULONG LowPart; } KeTickCount;
+
+KIRQL KeRaiseIrqlToSynchLevel(void) { return DISPATCH_LEVEL; }
+void KeLowerIrql(KIRQL OldIrql) { CHECK(OldIrql == DISPATCH_LEVEL); }
+void KeAcquireSpinLockAtDpcLevel(KSPIN_LOCK *Lock) { CHECK(*Lock == 0); *Lock = 1; }
+void KeReleaseSpinLockFromDpcLevel(KSPIN_LOCK *Lock) { CHECK(*Lock == 1); *Lock = 0; }
+void *ExAllocatePoolWithTag(int Pool, size_t Size, ULONG Tag)
+{
+    (void)Pool; (void)Tag; return malloc(Size);
+}
+void ExFreePoolWithTag(void *Pointer, ULONG Tag) { (void)Tag; free(Pointer); }
+static void KiReleasePrcbLock(PKPRCB Prcb) { CHECK(Prcb->PrcbLock); Prcb->PrcbLock = 0; }
+static void KiDeferredReadyThread(PKTHREAD Thread) { (void)Thread; CHECK(0); }
+static void KiAssertReadyQueue(PKPRCB Prcb, KPRIORITY Priority) { (void)Prcb; (void)Priority; }
+static void InsertTailList(PLIST_ENTRY Head, PLIST_ENTRY Entry)
+{
+    Entry->Blink = Head->Blink; Entry->Flink = Head;
+    Head->Blink->Flink = Entry; Head->Blink = Entry;
+}
+static void InsertHeadList(PLIST_ENTRY Head, PLIST_ENTRY Entry)
+{
+    Entry->Flink = Head->Flink; Entry->Blink = Head;
+    Head->Flink->Blink = Entry; Head->Flink = Entry;
+}
+
+@FUNCTION@
+
+int main(void)
+{
+    KPRCB Prcb = {0};
+    KTHREAD Thread = {0}, Leaving = {0}, Realtime = {0};
+    PKI_EEVDF_THREAD_STATE State;
+    KIRQL OldIrql;
+    unsigned Index;
+
+    for (Index = 0; Index < 32; Index++)
+        Prcb.DispatcherReadyListHead[Index].Flink = Prcb.DispatcherReadyListHead[Index].Blink =
+            &Prcb.DispatcherReadyListHead[Index];
+    Prcb.SetMember = 1;
+    Thread.Affinity = Leaving.Affinity = Realtime.Affinity = 1;
+    Thread.Priority = Leaving.Priority = 8;
+    Thread.QuantumReset = Leaving.QuantumReset = 6;
+    Realtime.Priority = LOW_REALTIME_PRIORITY;
+    CHECK(KiEevdfCreateThreadState(&Thread));
+    CHECK(KiEevdfCreateThreadState(&Leaving));
+    CHECK(KiEevdfCreateThreadState(&Realtime));
+    KiEevdfEnabled = TRUE;
+
+    Prcb.PrcbLock = 1;
+    KiQueueReadyThread(&Thread, &Prcb);
+    CHECK(!Prcb.PrcbLock && Thread.State == Ready && (Prcb.ReadySummary & PRIORITY_MASK(8)));
+    OldIrql = KiEevdfAcquireStateLock();
+    State = KiEevdfFindThreadStateLocked(&Thread);
+    CHECK(State->Initialized && State->Entity.Clock.Weight == 1024 && State->Entity.Slice == 60);
+    KiEevdfReleaseStateLock(OldIrql);
+
+    Leaving.Leaving = TRUE;
+    Prcb.PrcbLock = 1;
+    KiQueueReadyThread(&Leaving, &Prcb);
+    OldIrql = KiEevdfAcquireStateLock();
+    State = KiEevdfFindThreadStateLocked(&Leaving);
+    CHECK(!State->Initialized && State->Entity.Domain == NULL);
+    KiEevdfReleaseStateLock(OldIrql);
+    KiEevdfCompleteThreadSwitch(&Leaving, 10);
+    OldIrql = KiEevdfAcquireStateLock();
+    CHECK(State->Initialized && State->Entity.Domain != NULL && State->AccountedCycles == 10);
+    KiEevdfReleaseStateLock(OldIrql);
+
+    Prcb.PrcbLock = 1;
+    KiQueueReadyThread(&Realtime, &Prcb);
+    OldIrql = KiEevdfAcquireStateLock();
+    State = KiEevdfFindThreadStateLocked(&Realtime);
+    CHECK(!State->Initialized && State->Entity.Domain == NULL);
+    KiEevdfReleaseStateLock(OldIrql);
+
+    KiEevdfDeleteThreadState(&Thread);
+    KiEevdfDeleteThreadState(&Leaving);
+    KiEevdfDeleteThreadState(&Realtime);
+    return 0;
+}

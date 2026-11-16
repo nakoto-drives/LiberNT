@@ -1,0 +1,67 @@
+/*
+ * PROJECT:     LiberNT host-native tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Exercise clock-triggered EEVDF reviews
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+#include <ntoskrnl.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define CLOCK_QUANTUM_DECREMENT 3
+#define CHECK(Condition) do { if (!(Condition)) { \
+    fprintf(stderr, "line %d: %s\n", __LINE__, #Condition); exit(1); \
+} } while (0)
+
+static BOOLEAN KiEevdfEnabled, Expired;
+static ULONG UnitCycles, Charges, Requests, Decrements;
+static ULONG KiGetQuantumUnitCycles(void) { return UnitCycles; }
+static void KiChargeThreadCycleTime(PKPRCB Prcb, PKTHREAD Thread) { (void)Prcb; (void)Thread; Charges++; }
+static BOOLEAN KiDecrementThreadQuantum(PKTHREAD Thread, ULONG Decrement)
+{
+    (void)Thread; CHECK(Decrement == 3); Decrements++; return Expired;
+}
+static BOOLEAN KiIsThreadQuantumExpired(PKTHREAD Thread) { (void)Thread; return Expired; }
+static void KiRequestDispatchInterrupt(PKPRCB Prcb) { CHECK(Prcb->QuantumEnd); Requests++; }
+static void RunClock(PKPRCB Prcb, PKTHREAD Thread)
+{
+    ULONG Ticks = 1;
+@BLOCK@
+}
+
+int main(void)
+{
+    KPRCB Prcb = {0};
+    KTHREAD Thread = {0};
+
+    Thread.Priority = 8;
+    Prcb.ReadySummary = PRIORITY_MASK(8);
+    RunClock(&Prcb, &Thread);
+    CHECK(!Prcb.QuantumEnd && Requests == 0 && Charges == 0 && Decrements == 1);
+    KiEevdfEnabled = TRUE;
+    RunClock(&Prcb, &Thread);
+    CHECK(Prcb.QuantumEnd && Requests == 1 && Charges == 1 && Decrements == 2);
+    Prcb.QuantumEnd = FALSE;
+    Thread.Priority = LOW_REALTIME_PRIORITY;
+    Prcb.ReadySummary = PRIORITY_MASK(LOW_REALTIME_PRIORITY);
+    RunClock(&Prcb, &Thread);
+    CHECK(!Prcb.QuantumEnd && Requests == 1 && Charges == 1);
+    Thread.Priority = 8;
+    Prcb.ReadySummary = 0;
+    RunClock(&Prcb, &Thread);
+    CHECK(Prcb.QuantumEnd && Requests == 2);
+    Prcb.QuantumEnd = FALSE;
+    UnitCycles = 1;
+    Prcb.ReadySummary = PRIORITY_MASK(8);
+    RunClock(&Prcb, &Thread);
+    CHECK(Prcb.QuantumEnd && Requests == 3);
+    Prcb.QuantumEnd = FALSE;
+    KiEevdfEnabled = FALSE;
+    RunClock(&Prcb, &Thread);
+    CHECK(!Prcb.QuantumEnd && Requests == 3);
+    Expired = TRUE;
+    RunClock(&Prcb, &Thread);
+    CHECK(Prcb.QuantumEnd && Requests == 4);
+    return 0;
+}

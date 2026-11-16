@@ -1,0 +1,39 @@
+/*
+ * PROJECT:     LiberNT host-native tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Exercise exact matching of the experimental scheduler boot option
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+#include <ntoskrnl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <strings.h>
+
+#define _strnicmp strncasecmp
+#define ANSI_NULL '\0'
+#define CHECK(Condition) do { if (!(Condition)) { \
+    fprintf(stderr, "line %d: %s\n", __LINE__, #Condition); exit(1); \
+} } while (0)
+
+typedef const char *PCSTR;
+typedef size_t SIZE_T;
+
+@FIND@
+
+@EXACT@
+
+int main(void)
+{
+    CHECK(!ExpHasExactLoadOption(NULL, "EEVDF"));
+    CHECK(!ExpHasExactLoadOption("", "EEVDF"));
+    CHECK(!ExpHasExactLoadOption("EEVDF", ""));
+    CHECK(ExpHasExactLoadOption("eevdf", "EEVDF"));
+    CHECK(ExpHasExactLoadOption("/DEBUG /EEVDF /SOS", "EEVDF"));
+    CHECK(ExpHasExactLoadOption("EEVDFjunk/eevdf", "EEVDF"));
+    CHECK(!ExpHasExactLoadOption("EEVDFjunk", "EEVDF"));
+    CHECK(!ExpHasExactLoadOption("EEVDFEEVDF", "EEVDF"));
+    CHECK(!ExpHasExactLoadOption("NOEEVDF /DEBUG", "EEVDF"));
+    CHECK(!ExpHasExactLoadOption("/EEVDF=1", "EEVDF"));
+    return 0;
+}

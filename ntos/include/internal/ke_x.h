@@ -10,6 +10,10 @@
 #define KI_ARCH_THREAD_HANDOFF_USES_RUNNING 0
 #endif
 
+#ifndef KI_ARCH_HANDOFF_ACTIVE
+#define KI_ARCH_HANDOFF_ACTIVE TRUE
+#endif
+
 #define KI_THREAD_HANDOFF_USES_RUNNING \
     ((NTDDI_VERSION >= NTDDI_WIN7) && KI_ARCH_THREAD_HANDOFF_USES_RUNNING)
 
@@ -1066,7 +1070,7 @@ VOID
 KiWaitForThreadSwapOut(IN PKTHREAD Thread)
 {
 #if KI_THREAD_HANDOFF_USES_RUNNING
-    while (*(volatile BOOLEAN *)&Thread->Running)
+    while (KI_ARCH_HANDOFF_ACTIVE && *(volatile BOOLEAN *)&Thread->Running)
     {
         YieldProcessor();
     }
@@ -1087,6 +1091,8 @@ KiCompleteThreadSwitch(
     PKPRCB Prcb = KeGetCurrentPrcb();
     BOOLEAN ReadyTransition, ReapThread;
 
+    if (!KI_ARCH_HANDOFF_ACTIVE)
+        return;
     NewThread->Running = TRUE;
     KeMemoryBarrier();
 
@@ -1099,6 +1105,8 @@ KiCompleteThreadSwitch(
     ReapThread = (OldThread->State == Terminated);
     ASSERT(!ReadyTransition || (OldThread->State == DeferredReady));
     ASSERT(!ReadyTransition || !ReapThread);
+    if (KiEevdfEnabled)
+        KiEevdfCompleteThreadSwitch(OldThread, OldThread->CycleTime);
     KeMemoryBarrier();
     OldThread->Running = FALSE;
     KiReleasePrcbLock(Prcb);
@@ -1121,7 +1129,7 @@ KiThreadLeavingProcessor(
     _In_ PKTHREAD Thread)
 {
 #if KI_THREAD_HANDOFF_USES_RUNNING
-    return *(volatile BOOLEAN *)&Thread->Running;
+    return KI_ARCH_HANDOFF_ACTIVE && *(volatile BOOLEAN *)&Thread->Running;
 #else
     UNREFERENCED_PARAMETER(Thread);
     return FALSE;
@@ -1138,6 +1146,8 @@ KiDeferReadyWhileLeavingProcessor(
     BOOLEAN Leaving;
 
     ASSERT(Thread->State == DeferredReady);
+    if (!KI_ARCH_HANDOFF_ACTIVE)
+        return FALSE;
     if (!*(volatile BOOLEAN *)&Thread->Running)
     {
         KeMemoryBarrier();
@@ -1248,6 +1258,10 @@ KxQueueReadyThread(
     Thread->Preempted = FALSE;
     Thread->State = Ready;
     Thread->WaitTime = KeTickCount.LowPart;
+#if KI_THREAD_HANDOFF_USES_RUNNING
+    if (KiEevdfEnabled)
+        KiEevdfReadyThread(Thread, FALSE);
+#endif
     KiReadyQueueInsert(Prcb, Thread, Thread->Priority, AtHead);
 
     KiReleasePrcbLock(Prcb);
@@ -1275,7 +1289,12 @@ KiSelectReadyThread(
         Highest += Priority;
 
         ASSERT(!IsListEmpty(&Prcb->DispatcherReadyListHead[Highest]));
-        Thread = CONTAINING_RECORD(Prcb->DispatcherReadyListHead[Highest].Flink, KTHREAD, WaitListEntry);
+        Thread = NULL;
+        if (!KiEevdfEnabled ||
+            !KiEevdfTrySelectReady(Prcb, (KPRIORITY)Highest, &Thread))
+        {
+            Thread = CONTAINING_RECORD(Prcb->DispatcherReadyListHead[Highest].Flink, KTHREAD, WaitListEntry);
+        }
 
         ASSERT(Thread != Prcb->IdleThread);
         ASSERT(Thread->State == Ready && !Thread->ProcessReadyQueue);

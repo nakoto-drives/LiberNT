@@ -1,0 +1,111 @@
+/*
+ * PROJECT:     LiberNT host-native tests
+ * LICENSE:     GPL-3.0-or-later (https://spdx.org/licenses/GPL-3.0-or-later)
+ * PURPOSE:     Exercise the live quantum-end selection and dequeue block
+ * COPYRIGHT:   Copyright 2026 LiberNT contributors
+ */
+
+#include <ntoskrnl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include "eevdf_state.h"
+#include "eevdf_dispatch.h"
+
+#define KI_THREAD_HANDOFF_USES_RUNNING 1
+#define CHECK(Condition) do { if (!(Condition)) { \
+    fprintf(stderr, "line %d: %s\n", __LINE__, #Condition); exit(1); \
+} } while (0)
+
+ULONG KiCyclesPerClockQuantum = 10;
+static unsigned Switches;
+KIRQL KeRaiseIrqlToSynchLevel(void) { return DISPATCH_LEVEL; }
+void KeLowerIrql(KIRQL OldIrql) { CHECK(OldIrql == DISPATCH_LEVEL); }
+void KeAcquireSpinLockAtDpcLevel(KSPIN_LOCK *Lock) { CHECK(*Lock == 0); *Lock = 1; }
+void KeReleaseSpinLockFromDpcLevel(KSPIN_LOCK *Lock) { CHECK(*Lock == 1); *Lock = 0; }
+void *ExAllocatePoolWithTag(int Pool, size_t Size, ULONG Tag)
+{
+    (void)Pool; (void)Tag; return malloc(Size);
+}
+void ExFreePoolWithTag(void *Pointer, ULONG Tag) { (void)Tag; free(Pointer); }
+static void KiReadyQueueRemove(PKPRCB Prcb, PKTHREAD Thread, KPRIORITY Priority)
+{
+    PLIST_ENTRY Entry = &Thread->WaitListEntry;
+    Entry->Blink->Flink = Entry->Flink;
+    Entry->Flink->Blink = Entry->Blink;
+    if (Prcb->DispatcherReadyListHead[Priority].Flink == &Prcb->DispatcherReadyListHead[Priority])
+        Prcb->ReadySummary &= ~PRIORITY_MASK(Priority);
+}
+static PKTHREAD KiSelectReadyThread(KPRIORITY Priority, PKPRCB Prcb)
+{
+    PKTHREAD Thread;
+    if (Priority > HIGH_PRIORITY || !(Prcb->ReadySummary >> Priority))
+        return NULL;
+    Thread = CONTAINING_RECORD(Prcb->DispatcherReadyListHead[Priority].Flink,
+                               KTHREAD, WaitListEntry);
+    KiReadyQueueRemove(Prcb, Thread, Priority);
+    return Thread;
+}
+static BOOLEAN KiIsThreadQuantumExpired(PKTHREAD Thread) { (void)Thread; return FALSE; }
+static void KiAcquirePrcbLock(PKPRCB Prcb) { CHECK(!Prcb->PrcbLock); Prcb->PrcbLock = 1; }
+static void KiReleasePrcbLock(PKPRCB Prcb) { CHECK(Prcb->PrcbLock); Prcb->PrcbLock = 0; }
+static void KiSwitchToStandbyThread(PKPRCB Prcb, PKTHREAD Thread)
+{
+    (void)Prcb; (void)Thread; Switches++;
+}
+static void RunEarly(PKPRCB Prcb, PKTHREAD Thread)
+{
+    PKTHREAD Next;
+@EARLY@
+}
+static void RunBlock(PKPRCB Prcb, PKTHREAD Thread)
+{
+    PKTHREAD Next;
+@BLOCK@
+}
+
+int main(void)
+{
+    KPRCB Prcb = {0};
+    KTHREAD Current = {0}, Waiting = {0};
+    PLIST_ENTRY Head = &Prcb.DispatcherReadyListHead[7];
+
+    Head->Flink = &Waiting.WaitListEntry;
+    Head->Blink = &Waiting.WaitListEntry;
+    Waiting.WaitListEntry.Flink = Waiting.WaitListEntry.Blink = Head;
+    Current.State = Running;
+    Waiting.State = Ready;
+    Current.Priority = Waiting.Priority = 7;
+    Current.QuantumReset = Waiting.QuantumReset = 6;
+    Current.Affinity = Waiting.Affinity = 1;
+    Prcb.PrcbLock = 1;
+    Prcb.ReadySummary = PRIORITY_MASK(7);
+    Prcb.CurrentThread = &Current;
+    CHECK(KiEevdfCreateThreadState(&Current));
+    CHECK(KiEevdfCreateThreadState(&Waiting));
+    CHECK(KiEevdfPlaceThread(&Current, 0, 7, 1024, 60));
+    CHECK(KiEevdfPlaceThread(&Waiting, 0, 7, 1024, 60));
+    KiEevdfEnabled = TRUE;
+    RunBlock(&Prcb, &Current);
+    CHECK(Prcb.NextThread == NULL && Waiting.State == Ready && Prcb.ReadySummary == PRIORITY_MASK(7));
+    Current.CycleTime = 20;
+    Prcb.PrcbLock = 0;
+    Current.DeferPreemption = TRUE;
+    RunEarly(&Prcb, &Current);
+    CHECK(Switches == 1 && Prcb.NextThread == NULL && Waiting.State == Ready);
+    Current.DeferPreemption = FALSE;
+    RunEarly(&Prcb, &Current);
+    CHECK(Switches == 2 && Prcb.NextThread == &Waiting && Waiting.State == Standby);
+    CHECK(Current.Preempted && Current.QuantumReset == 6 && Prcb.ReadySummary == 0);
+    Prcb.NextThread = NULL;
+    Waiting.State = Ready;
+    Head->Flink = Head->Blink = &Waiting.WaitListEntry;
+    Waiting.WaitListEntry.Flink = Waiting.WaitListEntry.Blink = Head;
+    Prcb.ReadySummary = PRIORITY_MASK(7);
+    Prcb.PrcbLock = 1;
+    RunBlock(&Prcb, &Current);
+    CHECK(Prcb.NextThread == &Waiting && Waiting.State == Standby && Prcb.ReadySummary == 0);
+    CHECK(Head->Flink == Head && Head->Blink == Head);
+    KiEevdfDeleteThreadState(&Current);
+    KiEevdfDeleteThreadState(&Waiting);
+    return 0;
+}

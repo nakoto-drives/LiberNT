@@ -936,15 +936,25 @@ KiChargeRunTime(
      */
     if (KiGetQuantumUnitCycles() == 0)
     {
-        if (!KiDecrementThreadQuantum(Thread, CLOCK_QUANTUM_DECREMENT * Ticks))
+        BOOLEAN Expired, Review;
+        KPRIORITY Priority = Thread->Priority;
+
+        if (KiEevdfEnabled && Priority > LOW_PRIORITY && Priority < LOW_REALTIME_PRIORITY)
+            KiChargeThreadCycleTime(Prcb, Thread);
+        Expired = KiDecrementThreadQuantum(Thread, CLOCK_QUANTUM_DECREMENT * Ticks);
+        Review = KiEevdfEnabled && Priority > LOW_PRIORITY && Priority < LOW_REALTIME_PRIORITY;
+        if (!Expired && !Review)
             return;
     }
     else
     {
+        KPRIORITY Priority = Thread->Priority;
+
         /* A turn in progress is otherwise only charged at the next switch */
         KiChargeThreadCycleTime(Prcb, Thread);
 
-        if (!KiIsThreadQuantumExpired(Thread))
+        if (!KiIsThreadQuantumExpired(Thread) &&
+            !(KiEevdfEnabled && Priority > LOW_PRIORITY && Priority < LOW_REALTIME_PRIORITY))
             return;
     }
 

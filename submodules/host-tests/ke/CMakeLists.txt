@@ -10,9 +10,56 @@ add_custom_command(OUTPUT ${XSTATE_TEST_SOURCE}
 add_executable(ke_xstate_layout ${XSTATE_TEST_SOURCE})
 add_test(NAME ke.xstate_layout COMMAND ke_xstate_layout)
 
+add_executable(ke_eevdf_math eevdf_math_test.c ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_math.c)
+target_include_directories(ke_eevdf_math PRIVATE ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke)
+add_test(NAME ke.eevdf_math COMMAND ke_eevdf_math)
+
+add_executable(ke_eevdf_dispatch eevdf_dispatch_test.c
+    ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_dispatch.c
+    ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_domain.c
+    ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_math.c
+    ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_state.c)
+target_include_directories(ke_eevdf_dispatch PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/eevdf_fixture ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke)
+add_test(NAME ke.eevdf_dispatch COMMAND ke_eevdf_dispatch)
+
+find_package(Python3 QUIET COMPONENTS Interpreter)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME ke.eevdf_model COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf_model_test.py)
+endif()
+
 if(CMAKE_HOST_SYSTEM_NAME STREQUAL "Linux")
-    find_package(Python3 QUIET COMPONENTS Interpreter)
+    find_package(Threads REQUIRED)
+    add_executable(ke_eevdf_state eevdf_state_test.c ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_state.c
+        ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_math.c ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_domain.c)
+    target_include_directories(ke_eevdf_state PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/eevdf_fixture ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke)
+    add_executable(ke_eevdf_domain eevdf_domain_test.c
+        ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_domain.c
+        ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke/eevdf_math.c)
+    target_include_directories(ke_eevdf_domain PRIVATE ${REACTOS_HOST_SOURCE_ROOT}/ntos/ke)
+    add_test(NAME ke.eevdf_domain COMMAND ke_eevdf_domain)
+    target_link_libraries(ke_eevdf_state PRIVATE Threads::Threads)
+    add_test(NAME ke.eevdf_state COMMAND ke_eevdf_state)
     if(Python3_Interpreter_FOUND)
+        add_test(NAME ke.eevdf_handoff COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf-handoff-test.py
+            --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
+        add_test(NAME ke.eevdf_i386_handoff COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf-i386-handoff-test.py
+            --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
+        add_test(NAME ke.eevdf_queue COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf-queue-test.py
+            --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
+        add_test(NAME ke.eevdf_quantum COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf-quantum-test.py
+            --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
+        add_test(NAME ke.eevdf_clock COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf-clock-test.py
+            --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
+        add_test(NAME ke.eevdf_option COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf-option-test.py
+            --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
+        add_test(NAME ke.eevdf_priority COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf-priority-test.py
+            --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
+        add_test(NAME ke.eevdf_foreground COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf-foreground-test.py
+            --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
+        add_test(NAME ke.eevdf_select COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/eevdf-select-test.py
+            --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
         add_test(NAME ke.time_adjustment COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/time-adjustment-test.py
             --root ${REACTOS_HOST_SOURCE_ROOT} --cc ${CMAKE_C_COMPILER})
         add_test(NAME ke.timer_expired_list COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/timer-expired-list-test.py
