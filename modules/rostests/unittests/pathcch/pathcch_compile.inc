@@ -3,11 +3,6 @@
  * LICENSE:     LGPL-2.0-or-later (https://spdx.org/licenses/LGPL-2.0-or-later)
  * PURPOSE:     C/C++ compilation tests
  * COPYRIGHT:   Copyright 2025 Hermès Bélusca-Maïto <hermes.belusca-maito@reactos.org>
- *
- * REMARKS:
- * The purpose of these tests is to verify that the PathCch* functions can
- * be used either via static linking, or dynamic linking, in both C and C++
- * languages. Thus, only minimal testing of functionality is done here.
  */
 
 #ifdef __cplusplus
@@ -31,6 +26,8 @@ void test_C_PathCch(void)
 #endif
     PCWSTR pcsz;
     PWSTR pszPathOut;
+    PWSTR pszEnd;
+    size_t cchRemaining;
     WCHAR szPathOut[MAX_PATH];
 
     pszPathOut = NULL;
@@ -121,7 +118,7 @@ void test_C_PathCch(void)
 
     hr = StringCchCopyW(szPathOut, _countof(szPathOut), szExtraPath1);
     ok_hr(hr, S_OK);
-    hr = PathCchRemoveBackslashEx(szPathOut, _countof(szPathOut), NULL, NULL);
+    hr = PathCchRemoveBackslashEx(szPathOut, _countof(szPathOut), &pszEnd, &cchRemaining);
     ok_hr(hr, S_OK);
     ok_wstr(szPathOut, szExtraPath0);
 

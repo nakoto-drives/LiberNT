@@ -35,6 +35,23 @@ SampOpenAliasObject(IN PSAM_DB_OBJECT DomainObject,
 }
 
 
+static
+BOOLEAN
+SampIsAliasMember(IN PSAM_DB_OBJECT AliasObject,
+                  IN LPCWSTR MemberIdString)
+{
+    HANDLE MembersKeyHandle = NULL;
+    BOOLEAN Member;
+
+    if (!NT_SUCCESS(SampRegOpenKey(AliasObject->KeyHandle, L"Members", KEY_QUERY_VALUE, &MembersKeyHandle)))
+        return FALSE;
+
+    Member = NT_SUCCESS(SampRegQueryValue(MembersKeyHandle, MemberIdString, NULL, NULL, NULL));
+    SampRegCloseKey(&MembersKeyHandle);
+    return Member;
+}
+
+
 NTSTATUS
 SampAddMemberToAlias(IN PSAM_DB_OBJECT AliasObject,
                      IN PRPC_SID MemberId)
@@ -50,6 +67,13 @@ SampAddMemberToAlias(IN PSAM_DB_OBJECT AliasObject,
 
     ConvertSidToStringSidW(MemberId, &MemberIdString);
     TRACE("Member SID: %S\n", MemberIdString);
+
+    /* A member is not added twice (NetLocalGroupAddMembers documents ERROR_MEMBER_IN_ALIAS) */
+    if (MemberIdString != NULL && SampIsAliasMember(AliasObject, MemberIdString))
+    {
+        LocalFree(MemberIdString);
+        return STATUS_MEMBER_IN_ALIAS;
+    }
 
     MemberIdLength = RtlLengthSid(MemberId);
 
@@ -226,11 +250,19 @@ SampGetMembersInAlias(IN PSAM_DB_OBJECT AliasObject,
     ULONG Index;
     NTSTATUS Status;
 
+    *MemberCount = 0;
+    *MemberArray = NULL;
+
     /* Open the members key of the alias object */
     Status = SampRegOpenKey(AliasObject->KeyHandle,
                             L"Members",
                             KEY_READ,
                             &MembersKeyHandle);
+    if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
+    {
+        Status = STATUS_SUCCESS;
+        goto done;
+    }
     if (!NT_SUCCESS(Status))
     {
         ERR("SampRegOpenKey failed with status 0x%08lx\n", Status);
@@ -246,6 +278,9 @@ SampGetMembersInAlias(IN PSAM_DB_OBJECT AliasObject,
         ERR("SampRegQueryKeyInfo failed with status 0x%08lx\n", Status);
         goto done;
     }
+
+    if (Count == 0)
+        goto done;
 
     /* Allocate the member array */
     Members = midl_user_allocate(Count * sizeof(SAMPR_SID_INFORMATION));
@@ -306,6 +341,7 @@ SampGetMembersInAlias(IN PSAM_DB_OBJECT AliasObject,
     }
 
 done:
+    SampRegCloseKey(&MembersKeyHandle);
     return Status;
 }
 
@@ -326,6 +362,11 @@ SampRemoveAllMembersFromAlias(IN PSAM_DB_OBJECT AliasObject)
                             L"Members",
                             KEY_READ,
                             &MembersKeyHandle);
+    if (Status == STATUS_OBJECT_NAME_NOT_FOUND)
+    {
+        Status = STATUS_SUCCESS;
+        goto done;
+    }
     if (!NT_SUCCESS(Status))
     {
         ERR("SampRegOpenKey failed (Status 0x%08lx)\n", Status);

@@ -25,6 +25,15 @@ BOOLEAN DGRemoveIRP(
     PADDRESS_FILE AddrFile,
     PIRP Irp);
 
+VOID DGFreeQueuedDatagrams(
+    PADDRESS_FILE AddrFile);
+
+VOID DGDeliverError(
+    PADDRESS_FILE AddrFile,
+    PIP_ADDRESS RemoteAddress,
+    USHORT RemotePort,
+    NTSTATUS Status);
+
 VOID DGDeliverData(
   PADDRESS_FILE AddrFile,
   PIP_ADDRESS SrcAddress,
@@ -32,6 +41,7 @@ VOID DGDeliverData(
   USHORT SrcPort,
   USHORT DstPort,
   PIP_PACKET IPPacket,
-  UINT DataSize);
+  UINT DataSize,
+  PIP_INTERFACE Interface);
 
 /* EOF */

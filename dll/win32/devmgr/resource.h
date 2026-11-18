@@ -95,6 +95,7 @@
 #define IDS_TYPE_PORT           137
 #define IDS_TYPE_DMA            138
 #define IDS_TYPE_IRQ            139
+#define IDS_TYPE_LARGEMEMORY    140
 
 
 
@@ -188,6 +189,7 @@
 #define IDS_DEV_DRIVER_BLOCKED             0x236
 #define IDS_DEV_REGISTRY_TOO_LARGE         0x237
 #define IDS_DEV_SETPROPERTIES_FAILED       0x238
+#define IDS_DEV_PHANTOM_RESOLUTION         0x239
 
 #define IDS_PROP_DEVICEID           0x300
 #define IDS_PROP_HARDWAREIDS        0x301

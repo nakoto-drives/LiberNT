@@ -3,14 +3,14 @@ include_directories(
     ${REACTOS_SOURCE_DIR}/sdk/lib/crt/include)
 
 list(APPEND SOURCE
+    assert_compat.c
     __mingw_vsprintf.c
     __throw_out_of_range_fmt.cpp
-    StringCchCopyNA.c)
+    StringCchCopyNA.c
+    wctype_compat.c
+    io64_compat.c
+    ftelli64_compat.c)
 
-if(DLL_EXPORT_VERSION LESS 0x600)
-    list(APPEND SOURCE
-        rand_s.c)
-endif()
 
 add_library(stdc++compat ${SOURCE})
 set_target_cpp_properties(stdc++compat WITH_EXCEPTIONS)

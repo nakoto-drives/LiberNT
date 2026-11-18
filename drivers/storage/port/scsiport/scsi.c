@@ -13,7 +13,6 @@
 #include <debug.h>
 
 
-static
 NTSTATUS
 SpiStatusSrbToNt(
     _In_ UCHAR SrbStatus)
@@ -450,6 +449,35 @@ SpiGetNextRequestFromLun(
     }
 }
 
+/* A request that asked for its queue not to be frozen had it frozen all the same while the sense data was fetched */
+static
+VOID
+SpiThawQueueAfterSense(
+    _In_ PSCSI_PORT_DEVICE_EXTENSION DeviceExtension,
+    _In_ PSCSI_PORT_LUN_EXTENSION LunExtension,
+    _Inout_ PSCSI_REQUEST_BLOCK InitialSrb)
+{
+    KIRQL OldIrql;
+
+    if (!(InitialSrb->SrbFlags & SRB_FLAGS_NO_QUEUE_FREEZE) ||
+        !(InitialSrb->SrbStatus & SRB_STATUS_QUEUE_FROZEN))
+    {
+        return;
+    }
+
+    KeAcquireSpinLock(&DeviceExtension->SpinLock, &OldIrql);
+
+    ASSERT(LunExtension->Flags & LUNEX_FROZEN_QUEUE);
+
+    LunExtension->Flags &= ~LUNEX_FROZEN_QUEUE;
+    LunExtension->Flags &= ~LUNEX_NEED_REQUEST_SENSE;
+
+    // SpiGetNextRequestFromLun releases the lock
+    SpiGetNextRequestFromLun(DeviceExtension, LunExtension, &OldIrql);
+
+    InitialSrb->SrbStatus &= ~SRB_STATUS_QUEUE_FROZEN;
+}
+
 IO_COMPLETION_ROUTINE SpiSenseCompletionRoutine;
 
 NTSTATUS
@@ -495,24 +523,7 @@ SpiSenseCompletionRoutine(
     /* Make sure initial SRB's queue is frozen */
     ASSERT(InitialSrb->SrbStatus & SRB_STATUS_QUEUE_FROZEN);
 
-    // The queue is frozen, but the SRB had a SRB_FLAGS_NO_QUEUE_FREEZE => unfreeze the queue
-    if ((InitialSrb->SrbFlags & SRB_FLAGS_NO_QUEUE_FREEZE) &&
-        (InitialSrb->SrbStatus & SRB_STATUS_QUEUE_FROZEN))
-    {
-        KIRQL irql;
-
-        KeAcquireSpinLock(&portExt->SpinLock, &irql);
-
-        ASSERT(lunExt->Flags & LUNEX_FROZEN_QUEUE);
-
-        lunExt->Flags &= ~LUNEX_FROZEN_QUEUE;
-        lunExt->Flags &= ~LUNEX_NEED_REQUEST_SENSE;
-
-        // SpiGetNextRequestFromLun releases the lock
-        SpiGetNextRequestFromLun(portExt, lunExt, &irql);
-
-        InitialSrb->SrbStatus &= ~SRB_STATUS_QUEUE_FROZEN;
-    }
+    SpiThawQueueAfterSense(portExt, lunExt, InitialSrb);
 
     /* Complete this request */
     IoCompleteRequest(InitialIrp, IO_DISK_INCREMENT);
@@ -532,7 +543,7 @@ SpiSenseCompletionRoutine(
 }
 
 static
-VOID
+BOOLEAN
 SpiSendRequestSense(
     _In_ PSCSI_PORT_LUN_EXTENSION LunExtension,
     _In_ PSCSI_REQUEST_BLOCK InitialSrb)
@@ -548,6 +559,12 @@ SpiSendRequestSense(
 
     /* Allocate Srb */
     Srb = ExAllocatePoolWithTag(NonPagedPool, sizeof(SCSI_REQUEST_BLOCK) + sizeof(PVOID), TAG_SCSIPORT);
+    if (!Srb)
+    {
+        DPRINT("SpiSendRequestSense() failed, Srb %p\n", Srb);
+        return FALSE;
+    }
+
     RtlZeroMemory(Srb, sizeof(SCSI_REQUEST_BLOCK));
 
     /* Allocate IRP */
@@ -558,6 +575,11 @@ SpiSendRequestSense(
                                         InitialSrb->SenseInfoBufferLength,
                                         &LargeInt,
                                         NULL);
+    if (!Irp)
+    {
+        ExFreePoolWithTag(Srb, TAG_SCSIPORT);
+        return FALSE;
+    }
 
     IoSetCompletionRoutine(Irp,
                            SpiSenseCompletionRoutine,
@@ -565,12 +587,6 @@ SpiSendRequestSense(
                            TRUE,
                            TRUE,
                            TRUE);
-
-    if (!Srb)
-    {
-        DPRINT("SpiSendRequestSense() failed, Srb %p\n", Srb);
-        return;
-    }
 
     IrpStack = IoGetNextIrpStackLocation(Irp);
     IrpStack->MajorFunction = IRP_MJ_SCSI;
@@ -639,6 +655,7 @@ SpiSendRequestSense(
     (VOID)IoCallDriver(LunExtension->Common.DeviceObject, Irp);
 
     DPRINT("SpiSendRequestSense() done\n");
+    return TRUE;
 }
 
 
@@ -967,9 +984,12 @@ Error:
             KeReleaseSpinLockFromDpcLevel(&DeviceExtension->SpinLock);
 
             /* Send RequestSense */
-            SpiSendRequestSense(LunExtension, Srb);
+            if (SpiSendRequestSense(LunExtension, Srb))
+                return;
 
-            /* Exit */
+            /* No memory to ask for the sense data: the request is completed without it, as the sense completion would have */
+            SpiThawQueueAfterSense(DeviceExtension, LunExtension, Srb);
+            IoCompleteRequest(Irp, IO_DISK_INCREMENT);
             return;
         }
 
@@ -1443,7 +1463,7 @@ TryAgain:
         KeAcquireSpinLockAtDpcLevel(&DeviceExtension->SpinLock);
 
         /* Request an interrupt */
-        DeviceExtension->HwInterrupt(DeviceExtension->MiniPortDeviceExtension);
+        (VOID)!DeviceExtension->HwInterrupt(DeviceExtension->MiniPortDeviceExtension);
 
         ASSERT(DeviceExtension->Flags & SCSI_PORT_DISABLE_INT_REQUESET);
 

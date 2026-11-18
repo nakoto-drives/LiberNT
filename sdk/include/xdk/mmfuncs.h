@@ -216,6 +216,15 @@ MmAllocateContiguousMemorySpecifyCache(
   _In_opt_ PHYSICAL_ADDRESS BoundaryAddressMultiple,
   _In_ MEMORY_CACHING_TYPE CacheType);
 
+_IRQL_requires_max_(DISPATCH_LEVEL)
+NTKERNELAPI
+NTSTATUS
+NTAPI
+MmAllocateMdlForIoSpace(
+  _In_reads_(NumberOfEntries) PMM_PHYSICAL_ADDRESS_LIST PhysicalAddressList,
+  _In_ SIZE_T NumberOfEntries,
+  _Out_ PMDL *NewMdl);
+
 _Must_inspect_result_
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NTKERNELAPI
@@ -299,6 +308,19 @@ MmMapIoSpace(
   _In_ SIZE_T NumberOfBytes,
   _In_ MEMORY_CACHING_TYPE CacheType);
 
+#if (NTDDI_VERSION >= NTDDI_WINTHRESHOLD)
+_Must_inspect_result_
+_IRQL_requires_max_(DISPATCH_LEVEL)
+_Out_writes_bytes_opt_(NumberOfBytes)
+NTKERNELAPI
+PVOID
+NTAPI
+MmMapIoSpaceEx(
+  _In_ PHYSICAL_ADDRESS PhysicalAddress,
+  _In_ SIZE_T NumberOfBytes,
+  _In_ ULONG Protect);
+#endif
+
 _Must_inspect_result_
 _When_(AccessMode==KernelMode, _IRQL_requires_max_(DISPATCH_LEVEL))
 _When_(AccessMode==UserMode, _Maybe_raises_SEH_exception_ _IRQL_requires_max_(APC_LEVEL))
@@ -342,6 +364,16 @@ VOID
 NTAPI
 MmProbeAndLockPages(
   _Inout_ PMDL MemoryDescriptorList,
+  _In_ KPROCESSOR_MODE AccessMode,
+  _In_ LOCK_OPERATION Operation);
+
+_IRQL_requires_max_(APC_LEVEL)
+NTKERNELAPI
+VOID
+NTAPI
+MmProbeAndLockSelectedPages(
+  _Inout_ PMDL MemoryDescriptorList,
+  _In_ PFILE_SEGMENT_ELEMENT SegmentArray,
   _In_ KPROCESSOR_MODE AccessMode,
   _In_ LOCK_OPERATION Operation);
 
@@ -417,6 +449,22 @@ MmAllocateContiguousMemorySpecifyCacheNode(
   _In_opt_ PHYSICAL_ADDRESS BoundaryAddressMultiple,
   _In_ MEMORY_CACHING_TYPE CacheType,
   _In_ NODE_REQUIREMENT PreferredNode);
+
+#if (NTDDI_VERSION >= NTDDI_WIN8)
+_Must_inspect_result_
+_IRQL_requires_max_(DISPATCH_LEVEL)
+_When_ (return != NULL, _Post_writable_byte_size_ (NumberOfBytes))
+NTKERNELAPI
+PVOID
+NTAPI
+MmAllocateContiguousNodeMemory(
+  _In_ SIZE_T NumberOfBytes,
+  _In_ PHYSICAL_ADDRESS LowestAcceptableAddress,
+  _In_ PHYSICAL_ADDRESS HighestAcceptableAddress,
+  _In_opt_ PHYSICAL_ADDRESS BoundaryAddressMultiple,
+  _In_ ULONG Protect,
+  _In_ NODE_REQUIREMENT PreferredNode);
+#endif
 $endif (_WDMDDK_)
 $if (_NTDDK_)
 
@@ -431,6 +479,19 @@ PHYSICAL_ADDRESS
 NTAPI
 MmGetPhysicalAddress(
   _In_ PVOID BaseAddress);
+
+#if (NTDDI_VERSION >= NTDDI_WINBLUE)
+_IRQL_requires_max_(APC_LEVEL)
+NTKERNELAPI
+NTSTATUS
+NTAPI
+MmCopyMemory(
+  _Out_writes_bytes_(NumberOfBytes) PVOID TargetAddress,
+  _In_ MM_COPY_ADDRESS SourceAddress,
+  _In_ SIZE_T NumberOfBytes,
+  _In_ ULONG Flags,
+  _Out_ PSIZE_T NumberOfBytesTransferred);
+#endif
 
 NTKERNELAPI
 BOOLEAN
@@ -492,6 +553,27 @@ MmMapViewInSessionSpace(
   _Outptr_result_bytebuffer_(*ViewSize) PVOID *MappedBase,
   _Inout_ PSIZE_T ViewSize);
 
+#if (NTDDI_VERSION >= NTDDI_WIN8)
+_Must_inspect_result_
+_IRQL_requires_max_(APC_LEVEL)
+NTKERNELAPI
+NTSTATUS
+NTAPI
+MmMapViewInSessionSpaceEx(
+  _In_ PVOID Section,
+  _Outptr_result_bytebuffer_(*ViewSize) PVOID *MappedBase,
+  _Inout_ PSIZE_T ViewSize,
+  _Inout_ PLARGE_INTEGER SectionOffset,
+  _In_ ULONG_PTR Flags);
+
+_IRQL_requires_max_(APC_LEVEL)
+NTKERNELAPI
+NTSTATUS
+NTAPI
+MmPrefetchVirtualAddresses(
+  _In_ PPREFETCH_VIRTUAL_ADDRESS_LIST ParameterBlock);
+#endif
+
 _Must_inspect_result_
 _IRQL_requires_max_(APC_LEVEL)
 NTKERNELAPI
@@ -501,6 +583,22 @@ MmMapViewInSystemSpace(
   _In_ PVOID Section,
   _Outptr_result_bytebuffer_(*ViewSize) PVOID *MappedBase,
   _Inout_ PSIZE_T ViewSize);
+
+#if (NTDDI_VERSION >= NTDDI_WIN8)
+#define MM_SYSTEM_VIEW_EXCEPTIONS_FOR_INPAGE_ERRORS 0x1
+
+_Must_inspect_result_
+_IRQL_requires_max_(APC_LEVEL)
+NTKERNELAPI
+NTSTATUS
+NTAPI
+MmMapViewInSystemSpaceEx(
+  _In_ PVOID Section,
+  _Outptr_result_bytebuffer_(*ViewSize) PVOID *MappedBase,
+  _Inout_ PSIZE_T ViewSize,
+  _Inout_ PLARGE_INTEGER SectionOffset,
+  _In_ ULONG_PTR Flags);
+#endif
 
 _IRQL_requires_max_(DISPATCH_LEVEL)
 NTKERNELAPI
@@ -614,6 +712,20 @@ NTAPI
 MmSetAddressRangeModified(
   _In_reads_bytes_ (Length) PVOID Address,
   _In_ SIZE_T Length);
+
+#if (NTDDI_VERSION >= NTDDI_WIN10_RS4)
+#define MM_FORCE_CLOSED_DATA                0x1
+#define MM_FORCE_CLOSED_IMAGE               0x2
+#define MM_FORCE_CLOSED_LATER_OK            0x4
+
+_IRQL_requires_max_(APC_LEVEL)
+NTKERNELAPI
+BOOLEAN
+NTAPI
+MmForceSectionClosedEx(
+  _In_ PSECTION_OBJECT_POINTERS SectionObjectPointer,
+  _In_ ULONG ForceCloseFlags);
+#endif
 $endif (_NTIFS_)
 
 #endif /* (NTDDI_VERSION >= NTDDI_WIN2K) */
@@ -811,4 +923,3 @@ NtFreeVirtualMemory(
 
 $endif (_NTIFS_)
 #endif /* (NTDDI_VERSION >= NTDDI_VISTA) */
-

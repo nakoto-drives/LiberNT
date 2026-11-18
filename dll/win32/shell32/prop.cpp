@@ -9,8 +9,6 @@
 #include "precomp.h"
 #include "prop.h"
 
-WINE_DEFAULT_DEBUG_CHANNEL(shell_prop);
-
 static const struct SHELL32PKEYMAP
 {
     PCWSTR pszLegacyName;
@@ -38,7 +36,7 @@ SHELL_GetPropertyKeyFromLegacyName(_In_ PCWSTR pszString)
     return NULL;
 }
 
-#if /*TODO*/0 && (NTDDI_VERSION >= NTDDI_VISTA)
+#if /*TODO*/0
 #define SHELL_PropertyKeyFromPropertyKeyString PSPropertyKeyFromString
 #else
 static HRESULT

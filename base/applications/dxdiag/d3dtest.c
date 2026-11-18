@@ -8,119 +8,201 @@
 
 #include "precomp.h"
 
-#include <stdio.h>
-
 #define WIDTH   800
 #define HEIGHT  600
 
-BOOL D3D7Test(GUID *lpDevice, HWND hWnd);
-BOOL D3D8Test(GUID *lpDevice, HWND hWnd);
-BOOL D3D9Test(GUID *lpDevice, HWND hWnd);
+typedef BOOL (*PD3DTEST_ROUTINE)(GUID *lpDevice, HWND hWnd, BOOL BootMode, PD3DTEST_RESULT Result);
 
-BOOL StartD3DTest(GUID *lpDevice, HWND hWnd, HINSTANCE hInstance, WCHAR* pszCaption, INT TestNr)
+static const struct
 {
-    WCHAR szTestDescriptionRaw[256];
-    WCHAR szTestDescription[256];
-    WCHAR szCaption[256];
-    WCHAR szResult[256];
-    WCHAR szError[256];
-    BOOL Result;
+    PCSTR Name;
+    PD3DTEST_ROUTINE Run;
+    UINT DisplayName;
+} D3DTestApis[D3DTEST_API_COUNT] =
+{
+    { "D3D7", D3D7Test, 0 },
+    { "D3D8", D3D8Test, 0 },
+    { "D3D9", D3D9Test, 0 },
+    { "D3D10", D3D10Test, 0 },
+    { "D3D11", D3D11Test, 0 },
+    { "D3D12", D3D12Test, 0 },
+    { "GL1", GL1Test, 0 },
+    { "GL3", GL3Test, 0 },
+    { "DDRAW", DDWindowedTest, IDS_DDTEST_WINDOWED },
+    { "DDRAW_FULLSCREEN", DDFullscreenTest, IDS_DDTEST_FULLSCREEN },
+};
 
-    LoadStringW(hInstance, IDS_MAIN_DIALOG, szCaption, sizeof(szCaption) / sizeof(WCHAR));
-    LoadStringW(hInstance, IDS_DDTEST_ERROR, szError, sizeof(szError) / sizeof(WCHAR));
-    LoadStringW(hInstance, IDS_D3DTEST_D3Dx, szTestDescriptionRaw, sizeof(szTestDescriptionRaw) / sizeof(WCHAR));
-    //LoadStringW(hInstance, resResult, szResult, sizeof(szResult) / sizeof(WCHAR));
+const CHAR D3DTestShaderSource[] =
+    "struct VertexIn { float4 Position : POSITION; float4 Color : COLOR; };\n"
+    "struct VertexOut { float4 Position : SV_Position; float4 Color : COLOR; };\n"
+    "VertexOut VSMain(VertexIn Input) { VertexOut Output; Output.Position = Input.Position; Output.Color = Input.Color; return Output; }\n"
+    "float4 PSMain(VertexOut Input) : SV_Target { return Input.Color; }\n";
 
-    _swprintf(szTestDescription, szTestDescriptionRaw, TestNr);
-    if (MessageBox(NULL, szTestDescription, szCaption, MB_YESNO | MB_ICONQUESTION) == IDNO)
-        return FALSE;
+static BOOL D3DTestPumpMessages(VOID)
+{
+    MSG msg;
 
-    ShowWindow(hWnd, SW_SHOW);
-
-    switch(TestNr){
-        case 7:
-            Result = D3D7Test(lpDevice, hWnd);
-            break;
-        case 8:
-            Result = D3D8Test(lpDevice, hWnd);
-            break;
-        case 9:
-            Result = D3D9Test(lpDevice, hWnd);
-            break;
-        default:
-            Result = FALSE;
-    }
-
-    ShowWindow(hWnd, SW_HIDE);
-
-    if(!Result)
+    while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE))
     {
-        MessageBox(NULL, szError, szCaption, MB_OK | MB_ICONERROR);
-        return FALSE;
+        if (msg.message == WM_QUIT)
+            return FALSE;
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
     }
 
-    if(MessageBox(NULL, szResult, szCaption, MB_YESNO | MB_ICONQUESTION) == IDYES)
-        return TRUE;
+    return TRUE;
+}
 
+BOOL D3DTestContinue(PD3DTEST_RESULT Result, DWORD Start, DWORD *Elapsed)
+{
+    *Elapsed = GetTickCount() - Start;
+    Result->Elapsed = *Elapsed;
+    D3DTestStatsSample(&Result->Stats, *Elapsed, Result->Frames);
+    if (*Elapsed >= D3DTEST_DURATION_MS)
+        return FALSE;
+    if (D3DTestPumpMessages())
+        return TRUE;
+    Result->Stage = "message-pump";
+    Result->Status = E_ABORT;
     return FALSE;
 }
 
-static LRESULT CALLBACK WindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+BOOL D3DTestFail(PD3DTEST_RESULT Result, PCSTR Api, PCSTR Stage, HRESULT Status)
 {
-    return DefWindowProc(hWnd, msg, wParam, lParam);
+    CHAR Message[160];
+
+    Result->Stage = Stage;
+    Result->Status = Status;
+    if (SUCCEEDED(StringCchPrintfA(Message, ARRAYSIZE(Message), "DXDIAG_%s_FAIL stage=%s hr=0x%08lx\n", Api, Stage, (ULONG)Status)))
+        OutputDebugStringA(Message);
+    return FALSE;
 }
 
-VOID D3DTests(GUID *lpDevice)
+static VOID D3DTestMarker(D3DTEST_API Api, PCSTR Phase)
 {
-    WNDCLASSEX winClass;
+    CHAR Marker[64];
+
+    if (SUCCEEDED(StringCchPrintfA(Marker, ARRAYSIZE(Marker), "DXDIAG_%sBOOT_%s\n", D3DTestApis[Api].Name, Phase)))
+        OutputDebugStringA(Marker);
+}
+
+static LRESULT CALLBACK D3DTestWindowProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+    return DefWindowProcW(hWnd, msg, wParam, lParam);
+}
+
+static HWND D3DTestCreateWindow(BOOL BootMode)
+{
+    WNDCLASSEXW Class = { sizeof(Class) };
+    HINSTANCE hInstance = GetModuleHandleW(NULL);
+
+    Class.style = CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
+    Class.lpfnWndProc = D3DTestWindowProc;
+    Class.hInstance = hInstance;
+    Class.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    Class.lpszClassName = L"d3dtest";
+    if (!RegisterClassExW(&Class) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return NULL;
+
+    return CreateWindowExW(BootMode ? WS_EX_TOPMOST : 0, Class.lpszClassName, NULL, WS_POPUP,
+                           (GetSystemMetrics(SM_CXSCREEN) - WIDTH) / 2, (GetSystemMetrics(SM_CYSCREEN) - HEIGHT) / 2,
+                           WIDTH, HEIGHT, NULL, NULL, hInstance, NULL);
+}
+
+static BOOL D3DRunTest(GUID *lpDevice, D3DTEST_API Api, BOOL BootMode, PD3DTEST_RESULT Result)
+{
+    CHAR Message[96];
     HWND hWnd;
-    HINSTANCE hInstance = GetModuleHandle(NULL);
-    WCHAR szDescription[256];
-    WCHAR szCaption[256];
+    BOOL Passed;
 
-    winClass.cbSize = sizeof(WNDCLASSEX);
-    winClass.style = CS_DBLCLKS | CS_OWNDC | CS_HREDRAW | CS_VREDRAW;
-    winClass.lpfnWndProc = WindowProc;
-    winClass.cbClsExtra = 0;
-    winClass.cbWndExtra = 0;
-    winClass.hInstance = hInstance;
-    winClass.hIcon = 0;
-    winClass.hCursor = 0;
-    winClass.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
-    winClass.lpszMenuName = NULL;
-    winClass.lpszClassName = L"d3dtest";
-    winClass.hIconSm = LoadIcon(NULL, IDI_APPLICATION);
-
-    if (!RegisterClassEx(&winClass))
-        return;
-
-    hWnd = CreateWindowEx(
-        0,
-        winClass.lpszClassName,
-        NULL,
-        WS_POPUP,
-        (GetSystemMetrics(SM_CXSCREEN) - WIDTH)/2,
-        (GetSystemMetrics(SM_CYSCREEN) - HEIGHT)/2,
-        WIDTH,
-        HEIGHT,
-        NULL,
-        NULL,
-        hInstance,
-        NULL);
-
+    ZeroMemory(Result, sizeof(*Result));
+    hWnd = D3DTestCreateWindow(BootMode);
     if (!hWnd)
-        goto cleanup;
+        return D3DTestFail(Result, D3DTestApis[Api].Name, "create-window", HRESULT_FROM_WIN32(GetLastError()));
 
-    LoadStringW(hInstance, IDS_D3DTEST_DESCRIPTION, szDescription, sizeof(szDescription) / sizeof(WCHAR));
-    LoadStringW(hInstance, IDS_MAIN_DIALOG, szCaption, sizeof(szCaption) / sizeof(WCHAR));
-    if(MessageBox(NULL, szDescription, szCaption, MB_YESNO | MB_ICONQUESTION) == IDNO)
-        goto cleanup;
+    ShowWindow(hWnd, SW_SHOW);
+    SetForegroundWindow(hWnd);
+    UpdateWindow(hWnd);
+    D3DTestStatsBegin(&Result->Stats, hWnd);
+    if (BootMode)
+        D3DTestMarker(Api, "RENDER_BEGIN");
 
-    StartD3DTest(lpDevice, hWnd, hInstance, szCaption, 7);
-    StartD3DTest(lpDevice, hWnd, hInstance, szCaption, 8);
-    StartD3DTest(lpDevice, hWnd, hInstance, szCaption, 9);
+    Passed = D3DTestApis[Api].Run(lpDevice, hWnd, BootMode, Result);
+    if (Passed && SUCCEEDED(StringCchPrintfA(Message, ARRAYSIZE(Message), "DXDIAG_%s_RESULT frames=%u ms=%lu\n",
+                                             D3DTestApis[Api].Name, Result->Frames, Result->Elapsed)))
+        OutputDebugStringA(Message);
 
-cleanup:
+    if (BootMode && Passed)
+    {
+        D3DTestMarker(Api, "RENDER_END");
+        D3DTestMarker(Api, "CAPTURE_READY");
+    }
+    else if (BootMode)
+    {
+        WCHAR szCaption[256];
+        WCHAR szError[256];
+
+        D3DTestMarker(Api, "RENDER_FAILED");
+        LoadStringW(GetModuleHandleW(NULL), IDS_MAIN_DIALOG, szCaption, ARRAYSIZE(szCaption));
+        LoadStringW(GetModuleHandleW(NULL), IDS_DDTEST_ERROR, szError, ARRAYSIZE(szError));
+        MessageBoxW(hWnd, szError, szCaption, MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
+    }
+
     DestroyWindow(hWnd);
-    UnregisterClass(winClass.lpszClassName, hInstance);
+    return Passed;
+}
+
+static VOID D3DTestAppendNote(HWND hPage, PCWSTR Line)
+{
+    HWND hNotes = GetDlgItem(hPage, IDC_TEXT_INFO);
+    LRESULT Length = GetWindowTextLengthW(hNotes);
+
+    SendMessageW(hNotes, EM_SETSEL, Length, Length);
+    if (Length)
+        SendMessageW(hNotes, EM_REPLACESEL, FALSE, (LPARAM)L"\r\n");
+    SendMessageW(hNotes, EM_REPLACESEL, FALSE, (LPARAM)Line);
+}
+
+VOID D3DTestButton(HWND hPage, GUID *lpDevice, D3DTEST_API Api, UINT ButtonId)
+{
+    HINSTANCE hInstance = GetModuleHandleW(NULL);
+    HWND hMainDialog = GetAncestor(hPage, GA_ROOT);
+    D3DTEST_RESULT Result;
+    WCHAR Name[64];
+    WCHAR Format[256];
+    WCHAR Line[384];
+    ULONG Tenths;
+    HRESULT hr;
+
+    if (D3DTestApis[Api].DisplayName)
+        LoadStringW(hInstance, D3DTestApis[Api].DisplayName, Name, ARRAYSIZE(Name));
+    else if (!GetDlgItemTextW(hPage, ButtonId, Name, ARRAYSIZE(Name)))
+        StringCchCopyW(Name, ARRAYSIZE(Name), L"?");
+
+    EnableWindow(hMainDialog, FALSE);
+    /* TODO: run on the adapter shown by this page, not on the default adapter, for Direct3D 8 and later and OpenGL */
+    if (D3DRunTest(lpDevice, Api, FALSE, &Result))
+    {
+        Tenths = (ULONG)((ULONGLONG)Result.Frames * 10000 / max(Result.Elapsed, 1));
+        LoadStringW(hInstance, IDS_D3DTEST_BENCHMARK, Format, ARRAYSIZE(Format));
+        hr = StringCchPrintfW(Line, ARRAYSIZE(Line), Format, Name, Tenths / 10, Tenths % 10, Result.Frames, Result.Elapsed);
+    }
+    else
+    {
+        LoadStringW(hInstance, IDS_D3DTEST_FAILED, Format, ARRAYSIZE(Format));
+        hr = StringCchPrintfW(Line, ARRAYSIZE(Line), Format, Name, Result.Stage ? Result.Stage : "?", (ULONG)Result.Status);
+    }
+    EnableWindow(hMainDialog, TRUE);
+    SetForegroundWindow(hMainDialog);
+    if (SUCCEEDED(hr))
+        D3DTestAppendNote(hPage, Line);
+}
+
+BOOL D3D78BootTests(VOID)
+{
+    D3DTEST_RESULT Result;
+    BOOL D3D7Passed = D3DRunTest(NULL, D3DTEST_API_D3D7, TRUE, &Result);
+    BOOL D3D8Passed = D3DRunTest(NULL, D3DTEST_API_D3D8, TRUE, &Result);
+
+    return D3D7Passed && D3D8Passed;
 }

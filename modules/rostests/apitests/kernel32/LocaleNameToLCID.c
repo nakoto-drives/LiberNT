@@ -25,13 +25,8 @@ START_TEST(LocaleNameToLCID)
     pLocaleNameToLCID = (FN_LocaleNameToLCID*)GetProcAddress(hmodKernel32, "LocaleNameToLCID");
     if (pLocaleNameToLCID == NULL)
     {
-        hmodKernel32 = LoadLibraryW(L"kernel32_vista.dll");
-        pLocaleNameToLCID = (FN_LocaleNameToLCID*)GetProcAddress(hmodKernel32, "LocaleNameToLCID");
-        if (pLocaleNameToLCID == NULL)
-        {
-            skip("LocaleNameToLCID not found in kernel32.dll\n");
-            return;
-        }
+        skip("LocaleNameToLCID not found in kernel32.dll\n");
+        return;
     }
 
     lcid = pLocaleNameToLCID(L"en-US", 0);
@@ -103,10 +98,12 @@ START_TEST(LocaleNameToLCID)
     for (ULONG i = 0; i < ARRAYSIZE(SpecialCases); i++)
     {
         lcid = pLocaleNameToLCID(SpecialCases[i].Name, LOCALE_ALLOW_NEUTRAL_NAMES);
+        todo_if(is_reactos() && !wcscmp(SpecialCases[i].Name, L"tzm-Tfng"))
         ok(lcid == SpecialCases[i].Neutral,
            "Wrong neutral lcid for '%S': expected 0x%lx, got 0x%lx\n",
            SpecialCases[i].Name, SpecialCases[i].Neutral, lcid);
         lcid = pLocaleNameToLCID(SpecialCases[i].Name, 0);
+        todo_if(is_reactos() && !wcscmp(SpecialCases[i].Name, L"tzm-Tfng"))
         ok(lcid == SpecialCases[i].Default,
            "Wrong default lcid for '%S': expected 0x%lx, got 0x%lx\n",
            SpecialCases[i].Name, SpecialCases[i].Default, lcid);

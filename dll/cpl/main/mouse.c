@@ -371,11 +371,9 @@ ButtonProc(IN HWND hwndDlg,
                 SystemParametersInfo(SPI_SETDOUBLECLICKTIME, pButtonData->g_DoubleClickSpeed, NULL, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
                 //SetDoubleClickTime(pButtonData->g_DoubleClickSpeed);
 
-#if (WINVER >= 0x0500)
                 SystemParametersInfo(SPI_SETMOUSECLICKLOCK, 0, UlongToPtr(pButtonData->g_ClickLockEnabled), SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
                 if (pButtonData->g_ClickLockEnabled)
                    SystemParametersInfo(SPI_SETMOUSECLICKLOCKTIME, pButtonData->g_ClickLockTime, NULL, SPIF_SENDCHANGE | SPIF_UPDATEINIFILE);
-#endif
             }
             else if (lppsn->hdr.code == PSN_RESET)
             {
@@ -827,7 +825,7 @@ static BOOL
 BrowseCursor(HWND hwndDlg)
 {
     TCHAR szFileName[MAX_PATH];
-    TCHAR szFilter[MAX_PATH];
+    TCHAR szFilter[MAX_PATH] = _T("");
     TCHAR szTitle[MAX_PATH];
     OPENFILENAME ofn;
     INT nSel;

@@ -11,8 +11,6 @@
 #include <wine/debug.h>
 WINE_DEFAULT_DEBUG_CHANNEL(msctf);
 
-static HINSTANCE MSCTF_hinstance;
-
 typedef struct
 {
     DWORD id;
@@ -34,12 +32,17 @@ typedef struct
     ActivatedTextService *ats;
 } AtsEntry;
 
+/* Text services are activated per thread, on the thread manager of the calling thread */
+static struct list *current_textservices(UINT **ppActivated)
+{
+    ITfThreadMgrEx *tm = (ITfThreadMgrEx *)TlsGetValue(g_dwTLSIndex);
+    return tm ? ThreadMgr_GetTextServices(tm, ppActivated) : NULL;
+}
+
 static CookieInternal *cookies;
 static UINT id_last;
 static UINT array_size;
 
-static struct list AtsList = LIST_INIT(AtsList);
-static UINT activated = 0;
 
 TfClientId g_processId = 0;
 ITfCompartmentMgr *g_globalCompartmentMgr = NULL;
@@ -176,7 +179,7 @@ DWORD generate_Cookie(DWORD magic, LPVOID data)
         }
         else
         {
-            ERR("cookies: %p, array_size: %d\n", cookies, array_size);
+            TRACE("cookies: %p, array_size: %d\n", cookies, array_size);
             CookieInternal *new_cookies = (CookieInternal *)
                 cicMemReCalloc(cookies, array_size * 2, sizeof(CookieInternal));
             if (!new_cookies)
@@ -306,19 +309,92 @@ void free_sinks(struct list *sink_list)
 /*****************************************************************************
  * Active Text Service Management
  *****************************************************************************/
+static TfClientId s_transitionTid;
+static DWORD s_transitionThread;
+
+EXTERN_C
+BOOL is_textservice_in_transition(TfClientId tid)
+{
+    return tid && s_transitionTid == tid && s_transitionThread == GetCurrentThreadId();
+}
+
+static TfClientId begin_textservice_transition(TfClientId tid)
+{
+    TfClientId previous = (s_transitionThread == GetCurrentThreadId()) ? s_transitionTid : 0;
+    s_transitionTid = tid;
+    s_transitionThread = GetCurrentThreadId();
+    return previous;
+}
+
+static void end_textservice_transition(TfClientId previous)
+{
+    s_transitionTid = previous;
+    if (!previous)
+        s_transitionThread = 0;
+}
+
 static HRESULT activate_given_ts(ActivatedTextService *actsvr, ITfThreadMgrEx *tm)
 {
     HRESULT hr;
+    DWORD flags = 0;
+    ITfCategoryMgr *catmgr;
+    ITfTextInputProcessorEx *processorEx;
+    static const struct
+    {
+        DWORD flag;
+        const GUID *category;
+    } required[] = {
+        {TF_TMF_SECUREMODE, &GUID_TFCAT_TIPCAP_SECUREMODE},
+        {TF_TMF_UIELEMENTENABLEDONLY, &GUID_TFCAT_TIPCAP_UIELEMENTENABLED},
+        {TF_TMF_COMLESS, &GUID_TFCAT_TIPCAP_COMLESS},
+    };
+
+    tm->GetActiveFlags(&flags);
+    if (flags & TF_TMF_NOACTIVATETIP)
+        return S_OK;
+
+    if (flags & (TF_TMF_SECUREMODE | TF_TMF_UIELEMENTENABLEDONLY | TF_TMF_COMLESS))
+    {
+        hr = CategoryMgr_Constructor(NULL, (IUnknown **)&catmgr);
+        if (FAILED(hr))
+            return hr;
+
+        for (const auto &entry : required)
+        {
+            GUID category;
+            const GUID *requiredCategory = entry.category;
+            if (!(flags & entry.flag))
+                continue;
+            hr = catmgr->FindClosestCategory(actsvr->LanguageProfile.clsid, &category, &requiredCategory, 1);
+            if (hr != S_OK || category != *entry.category)
+            {
+                catmgr->Release();
+                return S_OK;
+            }
+        }
+        catmgr->Release();
+    }
 
     /* Already Active? */
     if (actsvr->pITfTextInputProcessor)
         return S_OK;
 
-    hr = CoCreateInstance(actsvr->LanguageProfile.clsid, NULL, CLSCTX_INPROC_SERVER,
-                          IID_ITfTextInputProcessor, (void **)&actsvr->pITfTextInputProcessor);
+    hr = cicCoCreateInstance(actsvr->LanguageProfile.clsid, NULL, CLSCTX_INPROC_SERVER,
+                             IID_ITfTextInputProcessor, (void **)&actsvr->pITfTextInputProcessor);
     if (FAILED(hr)) return hr;
 
-    hr = actsvr->pITfTextInputProcessor->Activate((ITfThreadMgr *)tm, actsvr->tid);
+    TfClientId previous = begin_textservice_transition(actsvr->tid);
+    hr = actsvr->pITfTextInputProcessor->QueryInterface(IID_ITfTextInputProcessorEx, (void **)&processorEx);
+    if (SUCCEEDED(hr))
+    {
+        hr = processorEx->ActivateEx((ITfThreadMgr *)tm, actsvr->tid, flags & ~TF_TMF_ACTIVATED);
+        processorEx->Release();
+    }
+    else if (flags & TF_TMF_UIELEMENTENABLEDONLY)
+        hr = E_NOINTERFACE;
+    else
+        hr = actsvr->pITfTextInputProcessor->Activate((ITfThreadMgr *)tm, actsvr->tid);
+    end_textservice_transition(previous);
     if (FAILED(hr))
     {
         actsvr->pITfTextInputProcessor->Release();
@@ -337,7 +413,9 @@ static HRESULT deactivate_given_ts(ActivatedTextService *actsvr)
 
     if (actsvr->pITfTextInputProcessor)
     {
+        TfClientId previous = begin_textservice_transition(actsvr->tid);
         hr = actsvr->pITfTextInputProcessor->Deactivate();
+        end_textservice_transition(previous);
         actsvr->pITfTextInputProcessor->Release();
         actsvr->pITfThreadMgrEx->Release();
         actsvr->pITfTextInputProcessor = NULL;
@@ -350,11 +428,17 @@ static HRESULT deactivate_given_ts(ActivatedTextService *actsvr)
 static void deactivate_remove_conflicting_ts(REFCLSID catid)
 {
     AtsEntry *ats, *cursor2;
+    struct list *list = current_textservices(NULL);
 
-    LIST_FOR_EACH_ENTRY_SAFE(ats, cursor2, &AtsList, AtsEntry, entry)
+    if (!list)
+        return;
+
+    LIST_FOR_EACH_ENTRY_SAFE(ats, cursor2, list, AtsEntry, entry)
     {
         if (catid == ats->ats->LanguageProfile.catid)
         {
+            if (ats->ats->pITfThreadMgrEx)
+                ThreadMgr_CleanupContextSinks(ats->ats->pITfThreadMgrEx, ats->ats->tid);
             deactivate_given_ts(ats->ats);
             list_remove(&ats->entry);
             cicMemFree(ats->ats);
@@ -363,6 +447,12 @@ static void deactivate_remove_conflicting_ts(REFCLSID catid)
             break;
         }
     }
+}
+
+EXTERN_C
+void deactivate_textservice_by_category(REFGUID catid)
+{
+    deactivate_remove_conflicting_ts(catid);
 }
 
 EXTERN_C
@@ -392,6 +482,7 @@ HRESULT add_active_textservice(TF_LANGUAGEPROFILE *lp)
     }
 
     actsvr->pITfTextInputProcessor = NULL;
+    actsvr->pITfThreadMgrEx = NULL;
     actsvr->LanguageProfile = *lp;
     actsvr->pITfKeyEventSink = NULL;
 
@@ -412,9 +503,6 @@ HRESULT add_active_textservice(TF_LANGUAGEPROFILE *lp)
     if (actsvr->LanguageProfile.catid != GUID_NULL)
         deactivate_remove_conflicting_ts(actsvr->LanguageProfile.catid);
 
-    if (activated > 0)
-        activate_given_ts(actsvr, tm);
-
     entry = (AtsEntry *)cicMemAlloc(sizeof(AtsEntry));
     if (!entry)
     {
@@ -422,8 +510,14 @@ HRESULT add_active_textservice(TF_LANGUAGEPROFILE *lp)
         return E_OUTOFMEMORY;
     }
 
+    UINT *pActivated;
+    struct list *list = ThreadMgr_GetTextServices(tm, &pActivated);
+
     entry->ats = actsvr;
-    list_add_head(&AtsList, &entry->entry);
+    list_add_head(list, &entry->entry);
+
+    if (*pActivated > 0)
+        activate_given_ts(actsvr, tm);
 
     return S_OK;
 }
@@ -432,8 +526,12 @@ EXTERN_C
 BOOL get_active_textservice(REFCLSID rclsid, TF_LANGUAGEPROFILE *profile)
 {
     AtsEntry *ats;
+    struct list *list = current_textservices(NULL);
 
-    LIST_FOR_EACH_ENTRY(ats, &AtsList, AtsEntry, entry)
+    if (!list)
+        return FALSE;
+
+    LIST_FOR_EACH_ENTRY(ats, list, AtsEntry, entry)
     {
         if (rclsid == ats->ats->LanguageProfile.clsid)
         {
@@ -446,46 +544,86 @@ BOOL get_active_textservice(REFCLSID rclsid, TF_LANGUAGEPROFILE *profile)
 }
 
 EXTERN_C
+BOOL get_active_textservice_by_category(REFGUID catid, TF_LANGUAGEPROFILE *profile)
+{
+    AtsEntry *ats;
+    struct list *list = current_textservices(NULL);
+
+    if (!list)
+        return FALSE;
+
+    LIST_FOR_EACH_ENTRY(ats, list, AtsEntry, entry)
+    {
+        if (catid == ats->ats->LanguageProfile.catid)
+        {
+            *profile = ats->ats->LanguageProfile;
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+EXTERN_C
 HRESULT activate_textservices(ITfThreadMgrEx *tm)
 {
     HRESULT hr = S_OK;
     AtsEntry *ats;
+    UINT *pActivated;
+    struct list *list = ThreadMgr_GetTextServices(tm, &pActivated);
 
-    activated ++;
-    if (activated > 1)
-        return S_OK;
+    ++*pActivated;
 
-    LIST_FOR_EACH_ENTRY(ats, &AtsList, AtsEntry, entry)
+    LIST_FOR_EACH_ENTRY(ats, list, AtsEntry, entry)
     {
         hr = activate_given_ts(ats->ats, tm);
         if (FAILED(hr))
-            FIXME("Failed to activate text service\n");
+            FIXME("Failed to activate text service %s: 0x%lx\n", debugstr_guid(&ats->ats->LanguageProfile.clsid), hr);
     }
     return hr;
 }
 
 EXTERN_C
-HRESULT deactivate_textservices(void)
+HRESULT deactivate_textservices(ITfThreadMgrEx *tm)
 {
     AtsEntry *ats;
+    UINT *pActivated;
+    struct list *list = ThreadMgr_GetTextServices(tm, &pActivated);
 
-    if (activated > 0)
-        activated --;
+    if (*pActivated > 0)
+        --*pActivated;
 
-    if (activated == 0)
+    if (*pActivated == 0)
     {
-        LIST_FOR_EACH_ENTRY(ats, &AtsList, AtsEntry, entry)
+        LIST_FOR_EACH_ENTRY(ats, list, AtsEntry, entry)
             deactivate_given_ts(ats->ats);
     }
     return S_OK;
 }
 
 EXTERN_C
+void free_textservices(struct list *list)
+{
+    AtsEntry *ats, *cursor2;
+
+    LIST_FOR_EACH_ENTRY_SAFE(ats, cursor2, list, AtsEntry, entry)
+    {
+        assert(!ats->ats->pITfTextInputProcessor);
+        list_remove(&ats->entry);
+        cicMemFree(ats->ats);
+        cicMemFree(ats);
+    }
+}
+
+EXTERN_C
 CLSID get_textservice_clsid(TfClientId tid)
 {
     AtsEntry *ats;
+    struct list *list = current_textservices(NULL);
 
-    LIST_FOR_EACH_ENTRY(ats, &AtsList, AtsEntry, entry)
+    if (!list)
+        return GUID_NULL;
+
+    LIST_FOR_EACH_ENTRY(ats, list, AtsEntry, entry)
     {
         if (ats->ats->tid == tid)
             return ats->ats->LanguageProfile.clsid;
@@ -497,11 +635,14 @@ EXTERN_C
 HRESULT get_textservice_sink(TfClientId tid, REFCLSID iid, IUnknown **sink)
 {
     AtsEntry *ats;
+    struct list *list = current_textservices(NULL);
 
     if (iid != IID_ITfKeyEventSink)
         return E_NOINTERFACE;
+    if (!list)
+        return E_FAIL;
 
-    LIST_FOR_EACH_ENTRY(ats, &AtsList, AtsEntry, entry)
+    LIST_FOR_EACH_ENTRY(ats, list, AtsEntry, entry)
     {
         if (ats->ats->tid == tid)
         {
@@ -517,11 +658,14 @@ EXTERN_C
 HRESULT set_textservice_sink(TfClientId tid, REFCLSID iid, IUnknown* sink)
 {
     AtsEntry *ats;
+    struct list *list = current_textservices(NULL);
 
     if (iid != IID_ITfKeyEventSink)
         return E_NOINTERFACE;
+    if (!list)
+        return E_FAIL;
 
-    LIST_FOR_EACH_ENTRY(ats, &AtsList, AtsEntry, entry)
+    LIST_FOR_EACH_ENTRY(ats, list, AtsEntry, entry)
     {
         if (ats->ats->tid == tid)
         {
@@ -542,7 +686,6 @@ BOOL WINAPI DllMain(HINSTANCE hinst, DWORD fdwReason, LPVOID fImpLoad)
     switch (fdwReason)
     {
         case DLL_PROCESS_ATTACH:
-            MSCTF_hinstance = hinst;
             return ProcessAttach(hinst);
 
         case DLL_PROCESS_DETACH:
@@ -585,7 +728,7 @@ HRESULT WINAPI DllGetClassObject(REFCLSID clsid, REFIID iid, LPVOID *ppvOut)
  */
 HRESULT WINAPI DllRegisterServer(void)
 {
-    return __wine_register_resources( MSCTF_hinstance );
+    return __wine_register_resources();
 }
 
 /***********************************************************************
@@ -593,7 +736,7 @@ HRESULT WINAPI DllRegisterServer(void)
  */
 HRESULT WINAPI DllUnregisterServer(void)
 {
-    return __wine_unregister_resources( MSCTF_hinstance );
+    return __wine_unregister_resources();
 }
 
 /***********************************************************************
@@ -677,8 +820,6 @@ HRESULT WINAPI TF_CreateLangBarMgr(ITfLangBarMgr **pppbm)
  */
 HRESULT WINAPI TF_CreateLangBarItemMgr(ITfLangBarItemMgr **pplbim)
 {
-    FIXME("stub %p\n", pplbim);
-    *pplbim = NULL;
-
-    return E_NOTIMPL;
+    TRACE("%p\n", pplbim);
+    return LangBarItemMgr_Constructor(pplbim);
 }

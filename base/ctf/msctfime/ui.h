@@ -196,10 +196,39 @@ public:
 
 /***********************************************************************/
 
+class CCompositionWindow
+{
+public:
+    CCompositionWindow(HWND hwndUI);
+    ~CCompositionWindow();
+
+    void Update(HIMC hIMC);
+    void Hide();
+    void SetAllowed(BOOL bAllowed);
+    static BOOL GetVisibleRect(_Out_ RECT *prc);
+    static void UnregisterWndClass();
+
+private:
+    BOOL EnsureWindow();
+    void Paint(HDC hDC);
+    static LRESULT CALLBACK WndProc(HWND hWnd, UINT uMsg, WPARAM wParam, LPARAM lParam);
+
+    HWND m_hwndUI;
+    HWND m_hWnd;
+    HFONT m_hFont;
+    LPWSTR m_pszText;
+    TF_DISPLAYATTRIBUTE *m_pDispAttr;
+    LPBYTE m_pClauseStart;
+    DWORD m_cchText;
+    DWORD m_dwCursor;
+    BOOL m_bAllowed;
+};
+
 struct UI
 {
     HWND m_hWnd;
     UIComposition *m_pComp;
+    CCompositionWindow *m_pCompWnd;
 
     UI(HWND hWnd);
     virtual ~UI();

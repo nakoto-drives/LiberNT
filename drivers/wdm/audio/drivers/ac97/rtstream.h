@@ -12,22 +12,16 @@
 
 #include "shared.h"
 
-#if (NTDDI_VERSION >= NTDDI_VISTA)
 
-//*****************************************************************************
-// Defines
-//*****************************************************************************
+/* Forward-declare CMiniport so stream.h can reference it */
+#ifndef PPORT_
+ #define PPORT_ PPORT
+ #define PPORTSTREAM_ PUNKNOWN
+#endif
+class CMiniport;
+#include "stream.h"
 
-//
-// The scatter gather can (only) handle 32 entries
-//
-const int MAX_BDL_ENTRIES = 32;
-
-//
-// Mask for accessing the scatter gather entries with a counter.
-//
-const int BDL_MASK = 31;
-
+/* MAX_BDL_ENTRIES and BDL_MASK are already defined in stream.h */
 
 //*****************************************************************************
 // Classes
@@ -47,7 +41,7 @@ private:
     // CAC97MiniportWaveRTStream private variables
     //
     DEVICE_POWER_STATE  m_PowerState;       // Current power state of the device.
-
+    PPORTWAVERTSTREAM   PortStream;        // Port stream (shadows base class PUNKNOWN)
 
     int                 mapEntries;
     tBDEntry            *BDList;
@@ -84,6 +78,13 @@ public:
     IMP_IMiniportWaveRTStream;
 
     /*************************************************************************
+     * CMiniportStream pure virtual overrides
+     *************************************************************************
+     */
+    void InterruptServiceRoutine();
+    NTSTATUS Init_() { return STATUS_SUCCESS; }
+
+    /*************************************************************************
      * CAC97MiniportWaveRTStream methods
      *************************************************************************
      */
@@ -111,7 +112,6 @@ public:
     );
 };
 
-#endif          // (NTDDI_VERSION >= NTDDI_VISTA)
 
 #endif          // _RTSTREAM_H_
 

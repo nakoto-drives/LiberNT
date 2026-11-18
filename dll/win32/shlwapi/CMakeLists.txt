@@ -1,9 +1,6 @@
 
 project(SHELL)
 
-remove_definitions(-D_WIN32_WINNT=0x502)
-add_definitions(-D_WIN32_WINNT=0x600)
-
 add_definitions(
     -D__WINESRC__
     -D_SHLWAPI_
@@ -35,7 +32,6 @@ list(APPEND PCH_SKIP_SOURCE
     propbag.cpp
     querysrc.cpp
     utils.cpp
-    wsprintf.c
     zonechk.c
     ${CMAKE_CURRENT_BINARY_DIR}/shlwapi_stubs.c)
 
@@ -68,11 +64,8 @@ target_compile_options(shlwapi_autocomp PRIVATE $<TARGET_PROPERTY:shlwapi,COMPIL
 add_dependencies(shlwapi_autocomp psdk)
 
 set_module_type(shlwapi win32dll UNICODE)
-target_link_libraries(shlwapi uuid wine crtheap cppstl)
-if(DLL_EXPORT_VERSION LESS 0x600)
-    target_link_libraries(shlwapi evalcmd)
-endif()
+target_link_libraries(shlwapi uuid wine wine_dll_version msvcrtex cppstl)
 add_delay_importlibs(shlwapi userenv oleaut32 ole32 comctl32 comdlg32 mpr mlang urlmon shell32 winmm version)
-add_importlibs(shlwapi shcore user32 gdi32 advapi32 wininet msvcrt kernelbase kernel32 kernel32_vista ntdll)
+add_importlibs(shlwapi shcore user32 gdi32 advapi32 wininet msvcrt kernelbase kernel32 ntdll)
 #add_pch(shlwapi precomp.h "${PCH_SKIP_SOURCE}")
 add_cd_file(TARGET shlwapi DESTINATION reactos/system32 FOR all)

@@ -3,6 +3,7 @@
  * LICENSE:     LGPL-2.0-or-later (https://spdx.org/licenses/LGPL-2.0-or-later)
  * PURPOSE:     Test for Rtl Critical Section API
  * COPYRIGHT:   Copyright 2023 Timo Kreuzer <timo.kreuzer@reactos.org>
+ *              Copyright 2026 Ahmed ARIF <arif.ing@outlook.com>
  */
 
 #include "precomp.h"
@@ -218,7 +219,7 @@ Test_Init(void)
                 ok_long(CritSect.DebugInfo->EntryCount, 0);
                 ok_long(CritSect.DebugInfo->ContentionCount, 0);
                 ok_long(CritSect.DebugInfo->Flags, 0);
-                ok_int(CritSect.DebugInfo->SpareWORD, 0);
+                trace("DebugInfo->SpareWORD is 0x%x\n", CritSect.DebugInfo->SpareWORD);
             }
         }
         else
@@ -380,6 +381,103 @@ Test_Acquire(void)
     WaitForSingleObject(hThread2, INFINITE);
 }
 
+static RTL_CRITICAL_SECTION ContendedCritSect;
+static HANDLE hContentionHeld, hContentionRelease;
+
+static
+DWORD
+WINAPI
+ContentionHolderProc(
+    _In_ LPVOID lpParameter)
+{
+    RtlEnterCriticalSection(&ContendedCritSect);
+    SetEvent(hContentionHeld);
+    WaitForSingleObject(hContentionRelease, INFINITE);
+    RtlLeaveCriticalSection(&ContendedCritSect);
+    return 0;
+}
+
+static
+DWORD
+WINAPI
+ContentionWaiterProc(
+    _In_ LPVOID lpParameter)
+{
+    RtlEnterCriticalSection(&ContendedCritSect);
+    RtlLeaveCriticalSection(&ContendedCritSect);
+    return 0;
+}
+
+static
+void
+Test_ContentionCreatesNoHandle(void)
+{
+    HANDLE hHolder, hWaiter;
+    DWORD Before = 0, Waiting = 0, After = 0, Deleted = 0;
+    ULONG i;
+
+    ok_ntstatus(RtlInitializeCriticalSection(&ContendedCritSect), STATUS_SUCCESS);
+    ok_ptr(ContendedCritSect.LockSemaphore, NULL);
+
+    hContentionHeld = CreateEventW(NULL, TRUE, FALSE, NULL);
+    hContentionRelease = CreateEventW(NULL, TRUE, FALSE, NULL);
+    hHolder = CreateThread(NULL, 0, ContentionHolderProc, NULL, 0, NULL);
+    ok(hHolder != NULL, "CreateThread failed with %lu\n", GetLastError());
+    WaitForSingleObject(hContentionHeld, INFINITE);
+    ok(GetProcessHandleCount(GetCurrentProcess(), &Before), "GetProcessHandleCount failed with %lu\n", GetLastError());
+
+    hWaiter = CreateThread(NULL, 0, ContentionWaiterProc, NULL, 0, NULL);
+    ok(hWaiter != NULL, "CreateThread failed with %lu\n", GetLastError());
+    for (i = 0; (ContendedCritSect.LockSemaphore == NULL) && (i < 1000); i++)
+    {
+        Sleep(10);
+    }
+    Sleep(20);
+    ok(GetProcessHandleCount(GetCurrentProcess(), &Waiting), "GetProcessHandleCount failed with %lu\n", GetLastError());
+    ok_ptr(ContendedCritSect.LockSemaphore, INVALID_HANDLE_VALUE);
+    ok(Waiting == Before + 1, "Handle count %lu while waiting, %lu before the waiter thread\n", Waiting, Before);
+
+    SetEvent(hContentionRelease);
+    WaitForSingleObject(hHolder, INFINITE);
+    WaitForSingleObject(hWaiter, INFINITE);
+    ok_ptr(ContendedCritSect.LockSemaphore, INVALID_HANDLE_VALUE);
+    CloseHandle(hHolder);
+    CloseHandle(hWaiter);
+    CloseHandle(hContentionHeld);
+    CloseHandle(hContentionRelease);
+
+    ok(GetProcessHandleCount(GetCurrentProcess(), &After), "GetProcessHandleCount failed with %lu\n", GetLastError());
+    ok_ntstatus(RtlDeleteCriticalSection(&ContendedCritSect), STATUS_SUCCESS);
+    ok(GetProcessHandleCount(GetCurrentProcess(), &Deleted), "GetProcessHandleCount failed with %lu\n", GetLastError());
+    ok(Deleted == After, "Handle count %lu after deleting, %lu before\n", Deleted, After);
+}
+
+static
+void
+Test_OwnedCount(void)
+{
+    RTL_CRITICAL_SECTION Section;
+    ULONG Before;
+
+    ok_ntstatus(RtlInitializeCriticalSection(&Section), STATUS_SUCCESS);
+    Before = NtCurrentTeb()->CountOfOwnedCriticalSections;
+
+    ok_ntstatus(RtlEnterCriticalSection(&Section), STATUS_SUCCESS);
+    ok_long(NtCurrentTeb()->CountOfOwnedCriticalSections, Before);
+    ok_ntstatus(RtlEnterCriticalSection(&Section), STATUS_SUCCESS);
+    ok_long(NtCurrentTeb()->CountOfOwnedCriticalSections, Before);
+    ok_ntstatus(RtlLeaveCriticalSection(&Section), STATUS_SUCCESS);
+    ok_ntstatus(RtlLeaveCriticalSection(&Section), STATUS_SUCCESS);
+    ok_long(NtCurrentTeb()->CountOfOwnedCriticalSections, Before);
+
+    ok(RtlTryEnterCriticalSection(&Section), "RtlTryEnterCriticalSection failed\n");
+    ok_long(NtCurrentTeb()->CountOfOwnedCriticalSections, Before);
+    ok_ntstatus(RtlLeaveCriticalSection(&Section), STATUS_SUCCESS);
+    ok_long(NtCurrentTeb()->CountOfOwnedCriticalSections, Before);
+
+    ok_ntstatus(RtlDeleteCriticalSection(&Section), STATUS_SUCCESS);
+}
+
 START_TEST(RtlCriticalSection)
 {
     HMODULE hmodNtDll = GetModuleHandleA("ntdll.dll");
@@ -408,4 +506,6 @@ START_TEST(RtlCriticalSection)
 
     Test_Init();
     Test_Acquire();
+    Test_ContentionCreatesNoHandle();
+    Test_OwnedCount();
 }

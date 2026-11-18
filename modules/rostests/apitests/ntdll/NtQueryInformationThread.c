@@ -13,7 +13,7 @@
 
 #define ok_nwstr(str1, str2, count) \
     ok(wcsncmp((PWCHAR)(str1), (PWCHAR)(str2), (count)) == 0, \
-       "Wrong string. Expected '%.*S', got '%.*S'\n", (count), (str1), (count), (str2))
+       "Wrong string. Expected '%.*ls', got '%.*ls'\n", (int)(count), (str1), (int)(count), (str2))
 
 static
 void
@@ -101,7 +101,7 @@ Test_ThreadBasicInformationClass(void)
     trace("ThreadInfoBasic->TebBaseAddress = %p\n", ThreadInfoBasic->TebBaseAddress);
     trace("ThreadInfoBasic->ClientId.UniqueProcess = %p\n", ThreadInfoBasic->ClientId.UniqueProcess);
     trace("ThreadInfoBasic->ClientId.UniqueThread = %p\n", ThreadInfoBasic->ClientId.UniqueThread);
-    trace("ThreadInfoBasic->AffinityMask = %lu\n", ThreadInfoBasic->AffinityMask);
+    trace("ThreadInfoBasic->AffinityMask = %Iu\n", (size_t)ThreadInfoBasic->AffinityMask);
     trace("ThreadInfoBasic->Priority = %li\n", ThreadInfoBasic->Priority);
     trace("ThreadInfoBasic->BasePriority = %li\n", ThreadInfoBasic->BasePriority);
 
@@ -198,10 +198,7 @@ Test_ThreadHideFromDebuggerClass(void)
                                     ThreadHideFromDebugger,
                                     &IsThreadHidden,
                                     sizeof(IsThreadHidden));
-    if (IsWow64)
-        ok_ntstatus(Status, STATUS_DATATYPE_MISALIGNMENT);
-    else
-        ok_ntstatus(Status, STATUS_INFO_LENGTH_MISMATCH);
+    ok_ntstatus(Status, STATUS_DATATYPE_MISALIGNMENT);
 
     /* The thread is still debuggable */
     IsThreadHidden = 0xCC;
@@ -278,6 +275,7 @@ Quit:
         NtClose(hWaitEvent);
 }
 
+static
 void
 Test_ThreadQueryAlignmentProbe(void)
 {
@@ -386,7 +384,7 @@ DoThreadNameTest(
 
     ASSERT(sizeof(NameInfo.Buffer) >= ExpectedNameLength);
 
-    winetest_push_context("Test %lu", i);
+    winetest_push_context("Test %u", i);
 
     /* Set a new thread name only if it's not '-1'; otherwise we
      * just query the existing name without setting it before. */
@@ -547,14 +545,13 @@ Test_ThreadNameInformation(void)
 
     NTDDIVersion = GetNTDDIVersion();
     trace("NTDDIVersion: 0x%08lx\n", NTDDIVersion);
-    if (!is_reactos() && NTDDIVersion < NTDDI_WIN10_RS1)
+    if (NTDDIVersion < NTDDI_WIN10_RS1)
     {
-        skip("Skipping %s on NT %hu.%hu(.%hu), because it is not supported.\n",
+        trace("Running %s on NT %lu.%lu(.%lu), it may not work!\n",
               __FUNCTION__,
               (NTDDIVersion & 0xFF000000) >> 24,
               (NTDDIVersion & 0x00FF0000) >> 16,
               (NTDDIVersion & 0x000000FF));
-        return;
     }
 
     Status = NtCreateEvent(&hWaitEvent,
@@ -616,12 +613,134 @@ Quit:
         NtClose(hWaitEvent);
 }
 
+static
+DWORD
+WINAPI
+ShortSpinThread(PVOID Parameter)
+{
+    LARGE_INTEGER Frequency, Start, Now;
+
+    UNREFERENCED_PARAMETER(Parameter);
+    QueryPerformanceFrequency(&Frequency);
+    QueryPerformanceCounter(&Start);
+    do
+    {
+        QueryPerformanceCounter(&Now);
+    } while (Now.QuadPart - Start.QuadPart < Frequency.QuadPart / 1000);
+
+    return 0;
+}
+
+static
+void
+Test_ThreadCycleTimeShortRun(void)
+{
+    THREAD_CYCLE_TIME_INFORMATION Information;
+    NTSTATUS Status;
+    HANDLE hThread;
+    ULONG i;
+
+    for (i = 0; i < 8; i++)
+    {
+        hThread = CreateThread(NULL, 0, ShortSpinThread, NULL, 0, NULL);
+        ok(hThread != NULL, "CreateThread failed with error %lu\n", GetLastError());
+        if (!hThread)
+            return;
+
+        ok_long(WaitForSingleObject(hThread, 10000), WAIT_OBJECT_0);
+        RtlZeroMemory(&Information, sizeof(Information));
+        Status = NtQueryInformationThread(hThread, ThreadCycleTime, &Information, sizeof(Information), NULL);
+        ok_ntstatus(Status, STATUS_SUCCESS);
+        ok(Information.AccumulatedCycles != 0, "Run %lu: a thread that ran for 1 ms has no cycles\n", i);
+        CloseHandle(hThread);
+    }
+}
+
+static volatile LONG CycleSpinState;
+
+static
+DWORD
+WINAPI
+CycleSpinThread(PVOID Parameter)
+{
+    UNREFERENCED_PARAMETER(Parameter);
+    InterlockedExchange(&CycleSpinState, 1);
+    while (CycleSpinState == 1)
+        ;
+    return 0;
+}
+
+static
+void
+Test_ThreadCycleTimeRunning(void)
+{
+    THREAD_CYCLE_TIME_INFORMATION Before, After;
+    LARGE_INTEGER Frequency, Start, Now;
+    ULONG i, Changed = 0;
+    SYSTEM_INFO SystemInfo;
+    NTSTATUS Status;
+    HANDLE hThread;
+
+    QueryPerformanceFrequency(&Frequency);
+    Status = NtQueryInformationThread(NtCurrentThread(), ThreadCycleTime, &Before, sizeof(Before), NULL);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+    QueryPerformanceCounter(&Start);
+    do
+    {
+        QueryPerformanceCounter(&Now);
+    } while (Now.QuadPart - Start.QuadPart < Frequency.QuadPart / 1000);
+    Status = NtQueryInformationThread(NtCurrentThread(), ThreadCycleTime, &After, sizeof(After), NULL);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+    ok(After.AccumulatedCycles > Before.AccumulatedCycles,
+       "1 ms of running left the calling thread at %I64u cycles\n", After.AccumulatedCycles);
+    ok(After.CurrentCycleCount > Before.CurrentCycleCount, "cycle stamp went from %I64u to %I64u\n",
+       Before.CurrentCycleCount, After.CurrentCycleCount);
+
+    GetSystemInfo(&SystemInfo);
+    if (SystemInfo.dwNumberOfProcessors < 2)
+    {
+        skip("a running thread needs a processor of its own\n");
+        return;
+    }
+
+    CycleSpinState = 0;
+    hThread = CreateThread(NULL, 0, CycleSpinThread, NULL, 0, NULL);
+    ok(hThread != NULL, "CreateThread failed with error %lu\n", GetLastError());
+    if (!hThread)
+        return;
+    while (CycleSpinState == 0)
+        YieldProcessor();
+
+    Status = NtQueryInformationThread(hThread, ThreadCycleTime, &Before, sizeof(Before), NULL);
+    ok_ntstatus(Status, STATUS_SUCCESS);
+    for (i = 0; i < 200; i++)
+    {
+        QueryPerformanceCounter(&Start);
+        do
+        {
+            QueryPerformanceCounter(&Now);
+        } while (Now.QuadPart - Start.QuadPart < Frequency.QuadPart / 10000);
+        Status = NtQueryInformationThread(hThread, ThreadCycleTime, &After, sizeof(After), NULL);
+        if (!NT_SUCCESS(Status))
+            break;
+        if (After.AccumulatedCycles > Before.AccumulatedCycles)
+            Changed++;
+        Before = After;
+    }
+    ok_ntstatus(Status, STATUS_SUCCESS);
+    ok(Changed >= 180, "the cycles of a running thread grew in %lu of 200 queries 100 us apart\n", Changed);
+
+    InterlockedExchange(&CycleSpinState, 2);
+    ok_long(WaitForSingleObject(hThread, 10000), WAIT_OBJECT_0);
+    CloseHandle(hThread);
+}
+
 START_TEST(NtQueryInformationThread)
 {
     Test_ThreadBasicInformationClass();
     Test_ThreadHideFromDebuggerClass();
-#if 0 // This test is too broken
     Test_ThreadQueryAlignmentProbe();
-#endif
     Test_ThreadNameInformation();
+    Test_ThreadCycleTimeShortRun();
+    Test_ThreadCycleTimeRunning();
 }

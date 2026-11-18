@@ -15,6 +15,9 @@
 #include "apphelp.h"
 #include "shimeng.h"
 
+#if (NTDDI_VERSION >= NTDDI_WIN8)
+#endif
+
 
 
 FARPROC WINAPI StubGetProcAddress(HINSTANCE hModule, LPCSTR lpProcName);
@@ -29,6 +32,7 @@ static UNICODE_STRING g_WindowsDirectory;
 static UNICODE_STRING g_System32Directory;
 static UNICODE_STRING g_SxsDirectory;
 static UNICODE_STRING g_LoadingShimDll;
+static ARRAY g_SuppressedEntries;
 ULONG g_ShimEngDebugLevel = 0xffffffff;
 BOOL g_bComPlusImage = FALSE;
 BOOL g_bShimDuringInit = FALSE;
@@ -1140,6 +1144,8 @@ VOID SeiSetEntryProcessed(PPEB Peb)
     PLIST_ENTRY ListHead, Entry;
     PLDR_DATA_TABLE_ENTRY LdrEntry;
 
+    ARRAY_Init(&g_SuppressedEntries, PLDR_DATA_TABLE_ENTRY);
+
     ListHead = &NtCurrentPeb()->Ldr->InInitializationOrderModuleList;
     Entry = ListHead->Flink;
     while (Entry != ListHead)
@@ -1158,8 +1164,14 @@ VOID SeiSetEntryProcessed(PPEB Peb)
         }
         else
         {
+            PLDR_DATA_TABLE_ENTRY *Suppressed = ARRAY_Append(&g_SuppressedEntries, PLDR_DATA_TABLE_ENTRY);
+
+            if (!Suppressed)
+                continue;
+
             SHIMENG_WARN("Touching        0x%p '%wZ'\n", LdrEntry->DllBase, &LdrEntry->BaseDllName);
-            LdrEntry->Flags |= (LDRP_ENTRY_PROCESSED | LDRP_SHIMENG_SUPPRESSED_ENTRY);
+            *Suppressed = LdrEntry;
+            LdrEntry->Flags |= LDRP_ENTRY_PROCESSED;
         }
     }
 
@@ -1188,31 +1200,31 @@ VOID SeiSetEntryProcessed(PPEB Peb)
 
 VOID SeiResetEntryProcessed(PPEB Peb)
 {
-    PLIST_ENTRY ListHead, Entry;
     PLDR_DATA_TABLE_ENTRY LdrEntry;
+    DWORD n;
 
-    ListHead = &NtCurrentPeb()->Ldr->InInitializationOrderModuleList;
-    Entry = ListHead->Flink;
-    while (Entry != ListHead)
+    for (n = 0; n < ARRAY_Size(&g_SuppressedEntries); ++n)
     {
-        LdrEntry = CONTAINING_RECORD(Entry, LDR_DATA_TABLE_ENTRY, InInitializationOrderLinks);
-        Entry = Entry->Flink;
+        LdrEntry = *ARRAY_At(&g_SuppressedEntries, PLDR_DATA_TABLE_ENTRY, n);
 
         if (SE_IsShimDll(LdrEntry->DllBase) ||
             g_hInstance == LdrEntry->DllBase ||
             RtlEqualUnicodeString(&LdrEntry->BaseDllName, &Ntdll, TRUE) ||
             RtlEqualUnicodeString(&LdrEntry->BaseDllName, &Kernel32, TRUE) ||
-            RtlEqualUnicodeString(&LdrEntry->BaseDllName, &Verifier, TRUE) ||
-            !(LdrEntry->Flags & LDRP_SHIMENG_SUPPRESSED_ENTRY))
+            RtlEqualUnicodeString(&LdrEntry->BaseDllName, &Verifier, TRUE))
         {
             SHIMENG_WARN("Don't mess with 0x%p '%wZ'\n", LdrEntry->DllBase, &LdrEntry->BaseDllName);
         }
         else
         {
             SHIMENG_WARN("Resetting       0x%p '%wZ'\n", LdrEntry->DllBase, &LdrEntry->BaseDllName);
-            LdrEntry->Flags &= ~(LDRP_ENTRY_PROCESSED | LDRP_SHIMENG_SUPPRESSED_ENTRY);
+            LdrEntry->Flags &= ~LDRP_ENTRY_PROCESSED;
         }
     }
+
+    if (g_SuppressedEntries.Data__)
+        SeiFree(g_SuppressedEntries.Data__);
+    ARRAY_Init(&g_SuppressedEntries, PLDR_DATA_TABLE_ENTRY);
 }
 
 VOID SeiInit(LPCWSTR ProcessImage, HSDB hsdb, SDBQUERYRESULT* pQuery, BOOLEAN ProcessInit)
@@ -1402,9 +1414,7 @@ BOOL SeiGetShimData(PUNICODE_STRING ProcessImage, PVOID pShimData, HSDB* pHsdb, 
     static const UNICODE_STRING ForbiddenShimmingApps[] = {
         RTL_CONSTANT_STRING(L"ntsd.exe"),
         RTL_CONSTANT_STRING(L"windbg.exe"),
-#if WINVER >= 0x600
         RTL_CONSTANT_STRING(L"slsvc.exe"),
-#endif
     };
     static const UNICODE_STRING PathDividerFind = RTL_CONSTANT_STRING(L"\\/");
     UNICODE_STRING ProcessName;
@@ -1533,4 +1543,3 @@ BOOL WINAPI SE_DynamicShim(LPCWSTR ProcessImage, HSDB hsdb, PVOID pQueryResult, 
 
     return TRUE;
 }
-

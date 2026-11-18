@@ -30,8 +30,18 @@
 #include "nbnamecache.h"
 #include "netbios.h"
 
+#ifdef __REACTOS__
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(array) (sizeof(array) / sizeof((array)[0]))
+#endif
+#endif
+
 extern LIST_ENTRY g_EnumContextListHead;
 extern CRITICAL_SECTION g_EnumContextListLock;
+
+ULONG
+GetAccountFlags(ULONG AccountControl,
+                PACL Dacl);
 
 /* misc.c */
 
@@ -41,6 +51,10 @@ GetAccountDomainSid(IN PUNICODE_STRING ServerName,
 
 NTSTATUS
 GetBuiltinDomainSid(OUT PSID *BuiltinDomainSid);
+
+BOOL
+IsAccountDomainName(IN PUNICODE_STRING ServerName,
+                    IN PCUNICODE_STRING DomainName);
 
 NTSTATUS
 OpenAccountDomain(IN SAM_HANDLE ServerHandle,

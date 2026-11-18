@@ -435,6 +435,10 @@ static BOOL CRYPT_ReadContextProp(
         case CERT_ENROLLMENT_PROP_ID:
         case CERT_CROSS_CERT_DIST_POINTS_PROP_ID:
         case CERT_RENEWAL_PROP_ID:
+#ifdef __REACTOS__
+        case CERT_NOT_BEFORE_FILETIME_PROP_ID:
+        case CERT_NOT_BEFORE_ENHKEY_USAGE_PROP_ID:
+#endif
         {
             CRYPT_DATA_BLOB blob = { hdr->cb,
              (LPBYTE)pbElement };
@@ -482,7 +486,7 @@ static BOOL CRYPT_ReadContextProp(
 const void *CRYPT_ReadSerializedElement(const BYTE *pbElement, DWORD cbElement,
  DWORD dwContextTypeFlags, DWORD *pdwContentType)
 {
-    const void *context;
+    const void *context = NULL;
 
     TRACE("(%p, %ld, %08lx, %p)\n", pbElement, cbElement, dwContextTypeFlags,
      pdwContentType);

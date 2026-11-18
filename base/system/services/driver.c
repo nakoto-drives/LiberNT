@@ -147,8 +147,9 @@ ScmGetDriverStatus(PSERVICE lpService,
     DWORD dwError = ERROR_SUCCESS;
     BOOLEAN bFound = FALSE;
     DWORD dwPreviousState;
+    DWORD dwInitialState = lpService->Status.dwCurrentState;
 
-    DPRINT1("ScmGetDriverStatus() called\n");
+    DPRINT("ScmGetDriverStatus() called\n");
 
     /* Zero output buffer if any */
     if (lpServiceStatus != NULL)
@@ -218,8 +219,8 @@ ScmGetDriverStatus(PSERVICE lpService,
         if (_wcsicmp(lpService->lpServiceName, DirInfo->Name.Buffer) == 0)
         {
             /* That's our driver, bail out! */
-            DPRINT1("Found: '%S'  '%wZ'\n",
-                    lpService->lpServiceName, &DirInfo->Name);
+            DPRINT("Found: '%S'  '%wZ'\n",
+                   lpService->lpServiceName, &DirInfo->Name);
             bFound = TRUE;
 
             break;
@@ -296,6 +297,9 @@ ScmGetDriverStatus(PSERVICE lpService,
         }
     }
 
+    if (lpService->Status.dwCurrentState != dwInitialState)
+        ScmNotifyServiceStatus(lpService);
+
     /* Copy service status if required */
     if (lpServiceStatus != NULL)
     {
@@ -304,7 +308,7 @@ ScmGetDriverStatus(PSERVICE lpService,
                       sizeof(SERVICE_STATUS));
     }
 
-    DPRINT1("ScmGetDriverStatus() done (Error: %lu)\n", dwError);
+    DPRINT("ScmGetDriverStatus() done (Error: %lu)\n", dwError);
 
     return ERROR_SUCCESS;
 }
@@ -318,11 +322,12 @@ ScmStartDriver(PSERVICE pService)
     DPRINT("ScmStartDriver(%p)\n", pService);
 
     dwError = ScmLoadDriver(pService);
-    if (dwError == ERROR_SUCCESS)
+    if (dwError == ERROR_SUCCESS || dwError == ERROR_SERVICE_ALREADY_RUNNING)
     {
         pService->Status.dwCurrentState = SERVICE_RUNNING;
         pService->Status.dwControlsAccepted = SERVICE_ACCEPT_STOP;
         pService->Status.dwWin32ExitCode = ERROR_SUCCESS;
+        ScmNotifyServiceStatus(pService);
     }
 
     DPRINT("ScmStartDriver returns %lu\n", dwError);
@@ -367,6 +372,7 @@ ScmControlDriver(PSERVICE lpService,
 
             /* Make the driver 'stop pending' */
             lpService->Status.dwCurrentState = SERVICE_STOP_PENDING;
+            ScmNotifyServiceStatus(lpService);
 
             /* Check the drivers status again */
             dwError = ScmGetDriverStatus(lpService,

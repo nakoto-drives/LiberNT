@@ -5,7 +5,7 @@
 ## PROJECT:     ReactOS ISO Remastering Script
 ## LICENSE:     GPL-2.0-or-later (https://spdx.org/licenses/GPL-2.0-or-later)
 ## PURPOSE:     Allows easy remastering of customized ReactOS ISO images.
-##              Based on the boot/boot_images.cmake script in the ReactOS
+##              Based on the sdk/cmake/boot_images.cmake script in the ReactOS
 ##              source tree. Requires a MKISOFS-compatible utility.
 ## COPYRIGHT:   Copyright 2025 Hermès Bélusca-Maïto <hermes.belusca-maito@reactos.org>
 ##
@@ -18,12 +18,12 @@
 ## Customizable settings
 ##
 ## ISO image identifier names
-ISO_MANUFACTURER="ReactOS Project"  # For both the publisher and the preparer
+ISO_MANUFACTURER="LiberNT Project"  # For both the publisher and the preparer
 ISO_VOLNAME="ReactOS"               # For both the Volume ID and the Volume set ID
 
-## Image names of the MKISOFS and ISOHYBRID tools
+## Image names of the MKISOFS and MKDISKIMG tools
 MKISOFS=mkisofs
-ISOHYBRID=isohybrid
+MKDISKIMG=mkdiskimg
 
 
 ##
@@ -156,7 +156,7 @@ echo
 
 ## Create a mkisofs sort file to specify an explicit ordering for the boot files
 ## to place them at the beginning of the image (makes ISO image analysis easier).
-## See mkisofs/schilytools/mkisofs/README.sort and boot/boot_images.cmake script
+## See mkisofs/schilytools/mkisofs/README.sort and sdk/cmake/boot_images.cmake script
 ## in the ReactOS source tree for more details.
 
 ## echo ${CMAKE_CURRENT_BINARY_DIR}/empty/boot.catalog 4
@@ -198,17 +198,17 @@ echo "The ISO image \"$OUTPUT_ISO\" has been successfully created."
 echo
 
 
-## Check whether ISOHYBRID is also available and if so, propose to post-process
+## Check whether MKDISKIMG is also available and if so, propose to post-process
 ## the generated ISO image to allow hybrid booting as a CD-ROM or as a hard disk.
-TOOL_PATH=$TOOL_DIR/$ISOHYBRID
+TOOL_PATH=$TOOL_DIR/$MKDISKIMG
 if [ -z "$TOOL_PATH" ] || [ ! -f "$TOOL_PATH" ]; then
-    TOOL_PATH=$(type -p $ISOHYBRID)
+    TOOL_PATH=$(type -p $MKDISKIMG)
     if [ -z "$TOOL_PATH" ]; then
-        echo "$ISOHYBRID patching skipped."
+        echo "$MKDISKIMG patching skipped."
         exit_script 0
     fi
 fi
-ISOHYBRID=$TOOL_PATH
+MKDISKIMG=$TOOL_PATH
 
 
 choice YN $'Do you want to post-process the ISO image to allow hybrid booting\nas a CD-ROM or as a hard disk [Y,N]? '
@@ -217,7 +217,7 @@ echo
 
 echo "Patching the ISO image..."
 
-"$ISOHYBRID" -b "$INPUT_DIR/$isombr_file" -t 0x96 "$OUTPUT_ISO"; ERRLVL=$?
+"$MKDISKIMG" -cd "$OUTPUT_ISO" -mbr "$INPUT_DIR/$isombr_file"; ERRLVL=$?
 echo
 
 if [ "$ERRLVL" -ne 0 ]; then

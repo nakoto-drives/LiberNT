@@ -15,6 +15,45 @@
 /* See iptypes.h */
 #define MAX_ADAPTER_DESCRIPTION_LENGTH 128
 
+TDI_STATUS InfoTdiQueryGetIFInfo(PVOID Context,
+                                 PNDIS_BUFFER Buffer,
+                                 PUINT BufferSize)
+{
+    IP_ADDRESS Address;
+    PIP_INTERFACE Interface;
+    IPInterfaceInfo *InterfaceInfo;
+    ULONG Size;
+    TDI_STATUS Status;
+
+    AddrInitIPv4(&Address, (ULONG)*(PULONG_PTR)Context);
+
+    Interface = AddrLocateInterface(&Address);
+    if (!Interface)
+        return TDI_INVALID_PARAMETER;
+
+    Size = FIELD_OFFSET(IPInterfaceInfo, iii_addr) + Interface->AddressLength;
+    InterfaceInfo = ExAllocatePoolWithTag(NonPagedPool, Size, OUT_DATA_TAG);
+    if (!InterfaceInfo)
+    {
+        IPDereferenceInterface(Interface);
+        return TDI_NO_RESOURCES;
+    }
+
+    InterfaceInfo->iii_flags = 0;
+    InterfaceInfo->iii_mtu = Interface->MTU;
+    InterfaceInfo->iii_speed = Interface->Speed;
+    InterfaceInfo->iii_addrlength = Interface->AddressLength;
+    RtlCopyMemory(InterfaceInfo->iii_addr, Interface->Address, Interface->AddressLength);
+
+    IPDereferenceInterface(Interface);
+
+    Status = InfoCopyOut((PCHAR)InterfaceInfo, Size, Buffer, BufferSize);
+
+    ExFreePoolWithTag(InterfaceInfo, OUT_DATA_TAG);
+
+    return Status;
+}
+
 TDI_STATUS InfoTdiQueryGetInterfaceMIB(TDIEntityID ID,
 				       PIP_INTERFACE Interface,
 				       PNDIS_BUFFER Buffer,
@@ -73,11 +112,7 @@ TDI_STATUS InfoTdiQueryGetInterfaceMIB(TDIEntityID ID,
 #endif
                     case NdisPhysicalMediumWirelessLan:
                         /* Win2003: MIB_IF_TYPE_ETHERNET; Vista+: IF_TYPE_IEEE80211 */
-#if (_WIN32_WINNT >= _WIN32_WINNT_VISTA)
                         OutData->if_type = IF_TYPE_IEEE80211;
-#else
-                        OutData->if_type = MIB_IF_TYPE_ETHERNET;
-#endif
                         break;
 #if 0
                     case NdisPhysicalMediumCableModem:
@@ -88,12 +123,10 @@ TDI_STATUS InfoTdiQueryGetInterfaceMIB(TDIEntityID ID,
                     case NdisPhysicalMedium1394:
                     case NdisPhysicalMediumWirelessWan:
 #endif
-#if (_WIN32_WINNT >= _WIN32_WINNT_VISTA)
                     /* NDIS 6.0+ (Vista+) */
                     case NdisPhysicalMediumNative802_11:
                         OutData->if_type = IF_TYPE_IEEE80211;
                         break;
-#endif
 #if 0
                     case NdisPhysicalMediumBluetooth:
                     case NdisPhysicalMediumInfiniband:
@@ -207,25 +240,35 @@ TDI_STATUS InfoTdiQueryGetArptableMIB(TDIEntityID ID,
 				      PNDIS_BUFFER Buffer,
 				      PUINT BufferSize) {
     NTSTATUS Status;
-    ULONG NumNeighbors = NBCopyNeighbors( Interface, NULL );
-    ULONG MemSize = NumNeighbors * sizeof(IPARP_ENTRY);
+    ULONG Capacity = NBCopyNeighbors( Interface, NULL, 0 );
+    ULONG NumNeighbors;
     PIPARP_ENTRY ArpEntries;
 
-    if (MemSize != 0)
-    {
-        ArpEntries = ExAllocatePoolWithTag( NonPagedPool, MemSize, ARP_ENTRY_TAG );
+    if (Capacity == 0)
+        return InfoCopyOut(NULL, 0, NULL, BufferSize);
+
+    for (;;) {
+        if (Capacity > MAXULONG / sizeof(IPARP_ENTRY))
+            return TDI_NO_RESOURCES;
+
+        ArpEntries = ExAllocatePoolWithTag( NonPagedPool, Capacity * sizeof(IPARP_ENTRY), ARP_ENTRY_TAG );
         if( !ArpEntries ) return STATUS_NO_MEMORY;
 
-        NBCopyNeighbors( Interface, ArpEntries );
-
-        Status = InfoCopyOut( (PVOID)ArpEntries, MemSize, Buffer, BufferSize );
+        RtlZeroMemory(ArpEntries, Capacity * sizeof(IPARP_ENTRY));
+        NumNeighbors = NBCopyNeighbors( Interface, ArpEntries, Capacity );
+        if (NumNeighbors <= Capacity)
+            break;
 
         ExFreePoolWithTag( ArpEntries, ARP_ENTRY_TAG );
+        Capacity = NumNeighbors;
     }
-    else
-    {
+
+    if (NumNeighbors == 0)
         Status = InfoCopyOut(NULL, 0, NULL, BufferSize);
-    }
+    else
+        Status = InfoCopyOut( (PVOID)ArpEntries, NumNeighbors * sizeof(IPARP_ENTRY), Buffer, BufferSize );
+
+    ExFreePoolWithTag( ArpEntries, ARP_ENTRY_TAG );
 
     return Status;
 }
@@ -242,15 +285,22 @@ TDI_STATUS InfoTdiSetArptableMIB(PIP_INTERFACE IF, PVOID Buffer, UINT BufferSize
     AddrInitIPv4(&Address, ArpEntry->LogAddr);
 
     if ((NCE = NBLocateNeighbor(&Address, IF)))
+    {
         NBRemoveNeighbor(NCE);
+        NBDereferenceNeighbor(NCE);
+    }
 
-    if (NBAddNeighbor(IF,
-                      &Address,
-                      ArpEntry->PhysAddr,
-                      ArpEntry->AddrSize,
-                      NUD_PERMANENT,
-                      0))
+    NCE = NBAddNeighbor(IF,
+                        &Address,
+                        ArpEntry->PhysAddr,
+                        ArpEntry->AddrSize,
+                        NUD_PERMANENT,
+                        0);
+    if (NCE)
+    {
+        NBDereferenceNeighbor(NCE);
         return TDI_SUCCESS;
+    }
     else
         return TDI_INVALID_PARAMETER;
 }

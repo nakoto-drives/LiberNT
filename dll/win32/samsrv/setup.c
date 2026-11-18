@@ -353,13 +353,53 @@ done:
 
 
 static
+VOID
+SampSetupDenyPasswordChange(PSECURITY_DESCRIPTOR Sd)
+{
+    SID_IDENTIFIER_AUTHORITY WorldAuthority = {SECURITY_WORLD_SID_AUTHORITY};
+    PACCESS_ALLOWED_ACE Ace;
+    BOOLEAN DaclPresent, DaclDefaulted;
+    PSID EveryoneSid = NULL;
+    PACL Dacl = NULL;
+    ULONG i;
+
+    if (!NT_SUCCESS(RtlGetDaclSecurityDescriptor(Sd, &DaclPresent, &Dacl, &DaclDefaulted)) ||
+        !DaclPresent || Dacl == NULL)
+    {
+        return;
+    }
+
+    if (!NT_SUCCESS(RtlAllocateAndInitializeSid(&WorldAuthority, 1, SECURITY_WORLD_RID,
+                                                0, 0, 0, 0, 0, 0, 0, &EveryoneSid)))
+    {
+        return;
+    }
+
+    for (i = 0; i < Dacl->AceCount; i++)
+    {
+        if (!NT_SUCCESS(RtlGetAce(Dacl, i, (PVOID*)&Ace)))
+            break;
+
+        if (Ace->Header.AceType == ACCESS_ALLOWED_ACE_TYPE &&
+            RtlEqualSid((PSID)&Ace->SidStart, EveryoneSid))
+        {
+            Ace->Mask &= ~USER_CHANGE_PASSWORD;
+        }
+    }
+
+    RtlFreeSid(EveryoneSid);
+}
+
+
+static
 NTSTATUS
 SampSetupCreateUserAccount(HANDLE hDomainKey,
                            LPCWSTR lpAccountName,
                            LPCWSTR lpComment,
                            PSID lpDomainSid,
                            ULONG ulRelativeId,
-                           ULONG UserAccountControl)
+                           ULONG UserAccountControl,
+                           BOOLEAN bPasswordCanChange)
 {
     SAM_USER_FIXED_DATA FixedUserData;
     GROUP_MEMBERSHIP GroupMembership;
@@ -382,6 +422,9 @@ SampSetupCreateUserAccount(HANDLE hDomainKey,
                               &SdSize);
     if (!NT_SUCCESS(Status))
         goto done;
+
+    if (!bPasswordCanChange)
+        SampSetupDenyPasswordChange(Sd);
 
     /* Initialize fixed user data */
     FixedUserData.Version = 1;
@@ -524,42 +567,6 @@ SampSetupCreateUserAccount(HANDLE hDomainKey,
     if (!NT_SUCCESS(Status))
         goto done;
 
-    /* Set LMPwd attribute*/
-    Status = SampRegSetValue(hAccountKey,
-                             L"LMPwd",
-                             REG_BINARY,
-                             (LPVOID)&EmptyLmHash,
-                             sizeof(ENCRYPTED_LM_OWF_PASSWORD));
-    if (!NT_SUCCESS(Status))
-        goto done;
-
-    /* Set NTPwd attribute*/
-    Status = SampRegSetValue(hAccountKey,
-                             L"NTPwd",
-                             REG_BINARY,
-                             (LPVOID)&EmptyNtHash,
-                             sizeof(ENCRYPTED_NT_OWF_PASSWORD));
-    if (!NT_SUCCESS(Status))
-        goto done;
-
-    /* Set LMPwdHistory attribute*/
-    Status = SampRegSetValue(hAccountKey,
-                             L"LMPwdHistory",
-                             REG_BINARY,
-                             NULL,
-                             0);
-    if (!NT_SUCCESS(Status))
-        goto done;
-
-    /* Set NTPwdHistory attribute*/
-    Status = SampRegSetValue(hAccountKey,
-                             L"NTPwdHistory",
-                             REG_BINARY,
-                             NULL,
-                             0);
-    if (!NT_SUCCESS(Status))
-        goto done;
-
     /* Set PrivateData attribute*/
     Status = SampRegSetValue(hAccountKey,
                              L"PrivateData",
@@ -645,14 +652,14 @@ SampSetupCreateDomain(IN HANDLE hServerKey,
     FixedData.MaxPasswordAge.QuadPart = -(6LL * 7LL * 24LL * 60LL * 60LL * TICKS_PER_SECOND); /* 6 weeks */
     FixedData.MinPasswordAge.QuadPart = 0;                                                    /* right now */
     FixedData.ForceLogoff.QuadPart = LLONG_MAX;                                               /* very far in the future aka never */
-    FixedData.LockoutDuration.QuadPart = -(30LL * 60LL * TICKS_PER_SECOND);                   /* 30 minutes */
-    FixedData.LockoutObservationWindow.QuadPart = -(30LL * 60LL * TICKS_PER_SECOND);          /* 30 minutes */
+    FixedData.LockoutDuration.QuadPart = -(10LL * 60LL * TICKS_PER_SECOND);
+    FixedData.LockoutObservationWindow.QuadPart = -(10LL * 60LL * TICKS_PER_SECOND);
     FixedData.ModifiedCountAtLastPromotion.QuadPart = 0;
     FixedData.NextRid = 1000;
-    FixedData.PasswordProperties = 0;
+    FixedData.PasswordProperties = DOMAIN_LOCKOUT_ADMINS;
     FixedData.MinPasswordLength = 0;
     FixedData.PasswordHistoryLength = 0;
-    FixedData.LockoutThreshold = 0;
+    FixedData.LockoutThreshold = 10;
     FixedData.DomainServerState = DomainServerEnabled;
     FixedData.DomainServerRole = DomainServerRolePrimary;
     FixedData.UasCompatibilityRequired = TRUE;
@@ -772,7 +779,7 @@ SampSetupCreateDomain(IN HANDLE hServerKey,
         goto done;
 
     /* Set SecDesc attribute*/
-    Status = SampRegSetValue(hServerKey,
+    Status = SampRegSetValue(hDomainKey,
                              L"SecDesc",
                              REG_BINARY,
                              Sd,
@@ -884,10 +891,55 @@ SampGetAccountDomainInfo(PPOLICY_ACCOUNT_DOMAIN_INFO *AccountDomainInfo)
 }
 
 
+/* A database created before client editions got the performance aliases is given them, as Windows 11 clients have both */
+VOID
+SampSetupAddMissingBuiltinAliases(
+    IN HANDLE hServerKey)
+{
+    static const struct
+    {
+        ULONG RelativeId;
+        UINT NameId;
+        UINT CommentId;
+    } Aliases[] =
+    {
+        { DOMAIN_ALIAS_RID_MONITORING_USERS, IDS_ALIAS_MONITORING_USERS_NAME, IDS_ALIAS_MONITORING_USERS_COMMENT },
+        { DOMAIN_ALIAS_RID_LOGGING_USERS, IDS_ALIAS_LOGGING_USERS_NAME, IDS_ALIAS_LOGGING_USERS_COMMENT },
+    };
+    HINSTANCE hInstance = GetModuleHandleW(L"samsrv.dll");
+    HANDLE hBuiltinDomainKey = NULL;
+    HANDLE hAliasKey = NULL;
+    WCHAR szKeyName[32];
+    WCHAR szComment[256];
+    WCHAR szName[80];
+    ULONG Index;
+
+    if (!NT_SUCCESS(SampRegOpenKey(hServerKey, L"Domains\\Builtin", KEY_ALL_ACCESS, &hBuiltinDomainKey)))
+        return;
+
+    for (Index = 0; Index < ARRAYSIZE(Aliases); Index++)
+    {
+        _swprintf(szKeyName, L"Aliases\\%08lX", Aliases[Index].RelativeId);
+        if (NT_SUCCESS(SampRegOpenKey(hBuiltinDomainKey, szKeyName, KEY_READ, &hAliasKey)))
+        {
+            SampRegCloseKey(&hAliasKey);
+            continue;
+        }
+
+        SampLoadString(hInstance, Aliases[Index].NameId, szName, ARRAYSIZE(szName));
+        SampLoadString(hInstance, Aliases[Index].CommentId, szComment, ARRAYSIZE(szComment));
+        SampSetupCreateAliasAccount(hBuiltinDomainKey, szName, szComment, Aliases[Index].RelativeId);
+    }
+
+    SampRegCloseKey(&hBuiltinDomainKey);
+}
+
+
 BOOL
 SampInitializeSAM(VOID)
 {
     PPOLICY_ACCOUNT_DOMAIN_INFO AccountDomainInfo = NULL;
+    PWSTR AccountDomainName = NULL;
     HANDLE hSamKey = NULL;
     HANDLE hServerKey = NULL;
     HANDLE hBuiltinDomainKey = NULL;
@@ -970,6 +1022,17 @@ SampInitializeSAM(VOID)
         bResult = FALSE;
         goto done;
     }
+
+    AccountDomainName = RtlAllocateHeap(RtlGetProcessHeap(), HEAP_ZERO_MEMORY,
+                                       AccountDomainInfo->DomainName.Length + sizeof(WCHAR));
+    if (!AccountDomainName)
+    {
+        bResult = FALSE;
+        goto done;
+    }
+    if (AccountDomainInfo->DomainName.Length)
+        RtlCopyMemory(AccountDomainName, AccountDomainInfo->DomainName.Buffer,
+                      AccountDomainInfo->DomainName.Length);
 
     SampLoadString(hInstance, IDS_DOMAIN_BUILTIN_NAME, szName, 80);
 
@@ -1070,26 +1133,24 @@ SampInitializeSAM(VOID)
                                 szComment,
                                 DOMAIN_ALIAS_RID_NETWORK_CONFIGURATION_OPS);
 
-    if (SampProductType != NtProductWinNt)
-    {
-        /* Create the Performance Monitor Users alias (Server only) */
-        SampLoadString(hInstance, IDS_ALIAS_MONITORING_USERS_NAME, szName, 80);
-        SampLoadString(hInstance, IDS_ALIAS_MONITORING_USERS_COMMENT, szComment, 256);
+    /* Windows 11 client editions have both performance aliases as well */
+    SampLoadString(hInstance, IDS_ALIAS_MONITORING_USERS_NAME, szName, 80);
+    SampLoadString(hInstance, IDS_ALIAS_MONITORING_USERS_COMMENT, szComment, 256);
 
-        SampSetupCreateAliasAccount(hBuiltinDomainKey,
-                                    szName,
-                                    szComment,
-                                    DOMAIN_ALIAS_RID_MONITORING_USERS);
+    SampSetupCreateAliasAccount(hBuiltinDomainKey,
+                                szName,
+                                szComment,
+                                DOMAIN_ALIAS_RID_MONITORING_USERS);
 
-        /* Create the Performance Log Users alias (Server only) */
-        SampLoadString(hInstance, IDS_ALIAS_LOGGING_USERS_NAME, szName, 80);
-        SampLoadString(hInstance, IDS_ALIAS_LOGGING_USERS_COMMENT, szComment, 256);
+    SampLoadString(hInstance, IDS_ALIAS_LOGGING_USERS_NAME, szName, 80);
+    SampLoadString(hInstance, IDS_ALIAS_LOGGING_USERS_COMMENT, szComment, 256);
 
-        SampSetupCreateAliasAccount(hBuiltinDomainKey,
-                                    szName,
-                                    szComment,
-                                    DOMAIN_ALIAS_RID_LOGGING_USERS);
-    }
+    SampSetupCreateAliasAccount(hBuiltinDomainKey,
+                                szName,
+                                szComment,
+                                DOMAIN_ALIAS_RID_LOGGING_USERS);
+
+    /* TODO: the other builtin aliases of Windows 11 clients (RIDs 562, 568, 569, 573, 578-581, 583) */
 
     /* Add the Administrator user to the Administrators alias */
     pSid = AppendRidToSid(AccountDomainInfo->DomainSid,
@@ -1128,7 +1189,7 @@ SampInitializeSAM(VOID)
     /* Create the Account domain */
     Status = SampSetupCreateDomain(hServerKey,
                                    L"Account",
-                                   L"",
+                                   AccountDomainName,
                                    AccountDomainInfo->DomainSid,
                                    FALSE,
                                    &hAccountDomainKey);
@@ -1156,7 +1217,8 @@ SampInitializeSAM(VOID)
                                szComment,
                                AccountDomainInfo->DomainSid,
                                DOMAIN_USER_RID_ADMIN,
-                               USER_DONT_EXPIRE_PASSWORD | USER_NORMAL_ACCOUNT);
+                               USER_DONT_EXPIRE_PASSWORD | USER_NORMAL_ACCOUNT,
+                               TRUE);
 
     /* Add the Adminitrator user to the Administrators alias */
     SampSetupAddMemberToGroup(hAccountDomainKey,
@@ -1172,7 +1234,9 @@ SampInitializeSAM(VOID)
                                szComment,
                                AccountDomainInfo->DomainSid,
                                DOMAIN_USER_RID_GUEST,
-                               USER_ACCOUNT_DISABLED | USER_DONT_EXPIRE_PASSWORD | USER_NORMAL_ACCOUNT);
+                               USER_ACCOUNT_DISABLED | USER_DONT_EXPIRE_PASSWORD | USER_PASSWORD_NOT_REQUIRED |
+                               USER_NORMAL_ACCOUNT,
+                               FALSE);
 
     /* Add the Guest user to the Guests alias */
     SampSetupAddMemberToGroup(hAccountDomainKey,
@@ -1180,6 +1244,9 @@ SampInitializeSAM(VOID)
                               DOMAIN_USER_RID_GUEST);
 
 done:
+    if (AccountDomainName)
+        RtlFreeHeap(RtlGetProcessHeap(), 0, AccountDomainName);
+
     if (AccountDomainInfo)
         LsaFreeMemory(AccountDomainInfo);
 

@@ -47,11 +47,10 @@ typedef struct
     LIST_ENTRY Entry;
     PKSOBJECT_CREATE_ITEM CreateItem;
     PFNKSITEMFREECALLBACK ItemFreeCallback;
-    LONG ReferenceCount;
     LIST_ENTRY ObjectItemList;
 }CREATE_ITEM_ENTRY, *PCREATE_ITEM_ENTRY;
 
-typedef struct
+typedef struct DECLSPEC_ALIGN(8)
 {
     KSOBJECTTYPE Type;
     PKSDEVICE KsDevice;
@@ -84,6 +83,20 @@ typedef struct
 
 typedef struct
 {
+    ULONG Size;
+    ULONG TypeSpecificFlags;
+    KSTIME PresentationTime;
+    LONGLONG Duration;
+    ULONG FrameExtent;
+    ULONG DataUsed;
+    ULONG Data;
+    ULONG OptionsFlags;
+} KSSTREAM_HEADER32, *PKSSTREAM_HEADER32;
+
+C_ASSERT(sizeof(KSSTREAM_HEADER32) == 48);
+
+typedef struct
+{
     KSBASIC_HEADER BasicHeader;
     KSDEVICE KsDevice;
 
@@ -105,10 +118,13 @@ typedef struct
 
     LIST_ENTRY PowerDispatchList;
     LIST_ENTRY ObjectBags;
+    BOOLEAN SurpriseRemoved;
 
     PADAPTER_OBJECT AdapterObject;
     ULONG MaxMappingsByteCount;
     ULONG MappingTableStride;
+
+    KSDEVICE_THERMAL_DISPATCH ThermalDispatch;
 
 }KSIDEVICE_HEADER, *PKSIDEVICE_HEADER;
 
@@ -137,6 +153,9 @@ typedef struct
     PFILE_OBJECT FileObject;
     PKSEVENT_ENTRY EventEntry;
     PIRP Irp;
+    const GUID *EventSet;
+    ULONG EventId;
+    PLIST_ENTRY PendingList;
 }KSEVENT_CTX, *PKSEVENT_CTX;
 
 typedef BOOLEAN (NTAPI *PKSEVENT_SYNCHRONIZED_ROUTINE)(PKSEVENT_CTX Context);
@@ -219,6 +238,7 @@ typedef struct __BUS_ENUM_DEVICE_EXTENSION__
     WORK_QUEUE_ITEM WorkItem;
     ULONG DeviceAttached;
     UNICODE_STRING ServicePath;
+    KMUTEX BusMutex;
 
     WCHAR BusIdentifier[1];
 }BUS_ENUM_DEVICE_EXTENSION, *PBUS_ENUM_DEVICE_EXTENSION;
@@ -278,4 +298,3 @@ typedef struct
     ULONG dw1;
     ULONG dw2;
 }KSPCACHE_MEDIUM;
-

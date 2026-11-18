@@ -59,13 +59,21 @@ CenterWindow(
         SWP_NOSIZE);
 }
 
-static BOOL
-SetFailedInstall(
+BOOL
+NewDevSetFailedInstall(
     IN HDEVINFO DeviceInfoSet,
     IN PSP_DEVINFO_DATA DevInfoData OPTIONAL,
     IN BOOLEAN Set)
 {
     DWORD dwType, dwSize, dwFlags = 0;
+    ULONG ulDevStatus, ulDevProblem;
+
+    if (Set && DevInfoData &&
+        CM_Get_DevNode_Status(&ulDevStatus, &ulDevProblem, DevInfoData->DevInst, 0) == CR_SUCCESS &&
+        (ulDevStatus & (DN_DRIVER_LOADED | DN_STARTED)))
+    {
+        return TRUE;
+    }
 
     dwSize = sizeof(dwFlags);
     if (!SetupDiGetDeviceRegistryProperty(DeviceInfoSet,
@@ -76,45 +84,50 @@ SetFailedInstall(
                                           dwSize,
                                           &dwSize))
     {
+        if (!Set || GetLastError() != ERROR_INVALID_DATA)
+            return FALSE;
+
+        dwFlags = 0;
+        dwSize = sizeof(dwFlags);
+    }
+    else if (dwType != REG_DWORD)
+    {
         return FALSE;
     }
 
-    if (Set)
-        dwFlags |= CONFIGFLAG_FAILEDINSTALL;
-    else
-        dwFlags &= ~CONFIGFLAG_FAILEDINSTALL;
-
-    if (!SetupDiSetDeviceRegistryProperty(DeviceInfoSet,
-                                          DevInfoData,
-                                          SPDRP_CONFIGFLAGS,
-                                          (PBYTE)&dwFlags,
-                                          dwSize))
+    if (Set || (dwFlags & CONFIGFLAG_FAILEDINSTALL))
     {
+        if (Set)
+            dwFlags |= CONFIGFLAG_FAILEDINSTALL;
+        else
+            dwFlags &= ~CONFIGFLAG_FAILEDINSTALL;
 
-        return FALSE;
+        if (!SetupDiSetDeviceRegistryProperty(DeviceInfoSet,
+                                              DevInfoData,
+                                              SPDRP_CONFIGFLAGS,
+                                              (PBYTE)&dwFlags,
+                                              dwSize))
+        {
+            return FALSE;
+        }
     }
 
     if (Set)
     {
-        /* Set the 'Unknown' device class */
-        PWSTR pszUnknown = L"Unknown";
-        SetupDiSetDeviceRegistryPropertyW(DeviceInfoSet,
-                                          DevInfoData,
-                                          SPDRP_CLASS,
-                                          (PBYTE)pszUnknown,
-                                          (wcslen(pszUnknown) + 1) * sizeof(WCHAR));
-
-        PWSTR pszUnknownGuid = L"{4D36E97E-E325-11CE-BFC1-08002BE10318}";
-        SetupDiSetDeviceRegistryPropertyW(DeviceInfoSet,
-                                          DevInfoData,
-                                          SPDRP_CLASSGUID,
-                                          (PBYTE)pszUnknownGuid,
-                                          (wcslen(pszUnknownGuid) + 1) * sizeof(WCHAR));
-
         /* Set device problem code CM_PROB_FAILED_INSTALL */
         CM_Set_DevNode_Problem(DevInfoData->DevInst,
                                CM_PROB_FAILED_INSTALL,
                                CM_SET_DEVNODE_PROBLEM_OVERRIDE);
+    }
+    else
+    {
+        ULONG ulStatus, ulProblem;
+
+        if (CM_Get_DevNode_Status(&ulStatus, &ulProblem, DevInfoData->DevInst, 0) == CR_SUCCESS &&
+            (ulStatus & DN_HAS_PROBLEM) && ulProblem == CM_PROB_FAILED_INSTALL)
+        {
+            CM_Set_DevNode_Problem(DevInfoData->DevInst, 0, CM_SET_DEVNODE_PROBLEM_OVERRIDE);
+        }
     }
 
     return TRUE;
@@ -258,9 +271,9 @@ FindDriverProc(
         if (!DevInstData->bUpdate)
         {
             /* Update device configuration */
-            SetFailedInstall(DevInstData->hDevInfo,
-                             &DevInstData->devInfoData,
-                             TRUE);
+            NewDevSetFailedInstall(DevInstData->hDevInfo,
+                                   &DevInstData->devInfoData,
+                                   TRUE);
         }
         PostMessage(DevInstData->hDialog, WM_SEARCH_FINISHED, 0, 0);
     }
@@ -522,9 +535,9 @@ WelcomeDlgProc(
 
             if (!DevInstData->bUpdate)
             {
-                SetFailedInstall(DevInstData->hDevInfo,
-                                 &DevInstData->devInfoData,
-                                 TRUE);
+                NewDevSetFailedInstall(DevInstData->hDevInfo,
+                                       &DevInstData->devInfoData,
+                                       TRUE);
             }
             break;
         }
@@ -925,9 +938,10 @@ InstallDrvDlgProc(
             {
                 SP_DEVINSTALL_PARAMS installParams;
 
-                SetFailedInstall(DevInstData->hDevInfo,
-                                 &DevInstData->devInfoData,
-                                 FALSE);
+                DevInstData->bInstalled = TRUE;
+                NewDevSetFailedInstall(DevInstData->hDevInfo,
+                                       &DevInstData->devInfoData,
+                                       FALSE);
 
                 /* Should we reboot? */
                 installParams.cbSize = sizeof(SP_DEVINSTALL_PARAMS);
@@ -1086,9 +1100,9 @@ NoDriverDlgProc(
                     }
                     else
                     {
-                        SetFailedInstall(DevInstData->hDevInfo,
-                                         &DevInstData->devInfoData,
-                                         FALSE);
+                        NewDevSetFailedInstall(DevInstData->hDevInfo,
+                                               &DevInstData->devInfoData,
+                                               FALSE);
                     }
                     break;
                 }

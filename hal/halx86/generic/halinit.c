@@ -19,6 +19,7 @@ BOOLEAN HalpOnlyBootProcessor;
 //#endif
 BOOLEAN HalpPciLockSettings;
 BOOLEAN HalBootViaEfi;
+ULONG HalpStallScaleFactor = INITIAL_STALL_COUNT;
 
 /* PRIVATE FUNCTIONS *********************************************************/
 
@@ -62,7 +63,7 @@ HalInitializeProcessor(
     HalpInitProcessor(ProcessorNumber, LoaderBlock);
 
     /* Set default stall count */
-    KeGetPcr()->StallScaleFactor = INITIAL_STALL_COUNT;
+    KeGetPcr()->StallScaleFactor = HalpStallScaleFactor;
 
     /* Update the interrupt affinity and processor mask */
     InterlockedBitTestAndSetAffinity(&HalpActiveProcessors, ProcessorNumber);
@@ -107,6 +108,7 @@ HalInitSystem(
             HalBootViaEfi = LoaderBlock->Extension->BootViaEFI;
 #endif
 #endif
+        HalpInitializeEfiRuntime(LoaderBlock);
 
         /* Check for PRCB version mismatch */
         if (Prcb->MajorVersion != PRCB_MAJOR_VERSION)
@@ -131,6 +133,11 @@ HalInitSystem(
 
         /* Initialize the PICs */
         HalpInitializePICs(TRUE);
+
+        /* Initialize MSI vector allocator (amd64 APIC only) */
+#ifdef _M_AMD64
+        HalpInitializeMsiVectors();
+#endif
 
         /* Initialize CMOS lock */
         KeInitializeSpinLock(&HalpSystemHardwareLock);
@@ -169,6 +176,8 @@ HalInitSystem(
 
         /* Initialize Phase 0 of the x86 emulator */
         HalInitializeBios(0, LoaderBlock);
+
+        HalpReserveMapBuffers(LoaderBlock);
     }
     else if (BootPhase == 1)
     {

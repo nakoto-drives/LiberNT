@@ -124,9 +124,7 @@ LoadCurrentScheme(OUT COLOR_SCHEME *scheme)
     INT i, Result;
     HKEY hKey;
     BOOL ret;
-#if (WINVER >= 0x0600)
     OSVERSIONINFO osvi;
-#endif
 
     /* Load colors */
     for (i = 0; i < NUM_COLORS; i++)
@@ -137,7 +135,6 @@ LoadCurrentScheme(OUT COLOR_SCHEME *scheme)
     /* Load non client metrics */
     scheme->ncMetrics.cbSize = sizeof(NONCLIENTMETRICSW);
 
-#if (WINVER >= 0x0600)
     /* Size of NONCLIENTMETRICSA/W depends on current version of the OS.
      * see:
      *  https://learn.microsoft.com/en-us/windows/win32/api/winuser/ns-winuser-nonclientmetricsa
@@ -148,7 +145,6 @@ LoadCurrentScheme(OUT COLOR_SCHEME *scheme)
         if (osvi.dwMajorVersion <= 5)
             scheme->ncMetrics.cbSize -= sizeof(scheme->ncMetrics.iPaddedBorderWidth);
     }
-#endif
 
     ret = SystemParametersInfoW(SPI_GETNONCLIENTMETRICS,
                                 sizeof(NONCLIENTMETRICSW),
@@ -259,6 +255,7 @@ LoadSchemeFromReg(OUT COLOR_SCHEME *scheme, IN PTHEME_SELECTION pSelectedTheme)
     if (result != ERROR_SUCCESS) return FALSE;
 
     scheme->bFlatMenus = SHRegGetIntW(hkScheme, L"FlatMenus", 0);
+    scheme->ncMetrics.iPaddedBorderWidth = 0;
 
     for (i = 0; i < NUM_COLORS; i++)
     {
@@ -965,7 +962,7 @@ LoadSchemeFromTheme(OUT PCOLOR_SCHEME scheme, IN PTHEME_SELECTION pSelectedTheme
     HTHEMEFILE hThemeFile = 0;
     HRESULT hret;
     HTHEME hTheme;
-    int i;
+    int i, BorderWidth;
 
     hret = OpenThemeFile(pSelectedTheme->Theme->ThemeFileName,
                          pSelectedTheme->Color->StyleName,
@@ -986,7 +983,14 @@ LoadSchemeFromTheme(OUT PCOLOR_SCHEME scheme, IN PTHEME_SELECTION pSelectedTheme
 
     /* Load sizes */
     /* I wonder why GetThemeSysInt doesn't work here */
-    scheme->ncMetrics.iBorderWidth = GetThemeSysSize(hTheme, SM_CXFRAME);
+    BorderWidth = GetThemeSysSize(hTheme, SM_CXFRAME);
+    if (BorderWidth == GetSystemMetrics(SM_CXFRAME))
+    {
+        BorderWidth -= GetSystemMetrics(SM_CXDLGFRAME);
+        if (BorderWidth < 1)
+            BorderWidth = 1;
+    }
+    scheme->ncMetrics.iBorderWidth = BorderWidth;
     scheme->ncMetrics.iScrollWidth = GetThemeSysSize(hTheme, SM_CXVSCROLL);
     scheme->ncMetrics.iScrollHeight = GetThemeSysSize(hTheme, SM_CYHSCROLL);
     scheme->ncMetrics.iCaptionWidth = GetThemeSysSize(hTheme, SM_CXSIZE);
@@ -995,6 +999,7 @@ LoadSchemeFromTheme(OUT PCOLOR_SCHEME scheme, IN PTHEME_SELECTION pSelectedTheme
     scheme->ncMetrics.iSmCaptionHeight = GetThemeSysSize(hTheme, SM_CYSMSIZE);
     scheme->ncMetrics.iMenuWidth = GetThemeSysSize(hTheme, SM_CXMENUSIZE);
     scheme->ncMetrics.iMenuHeight = GetThemeSysSize(hTheme, SM_CYMENUSIZE);
+    scheme->ncMetrics.iPaddedBorderWidth = GetThemeSysSize(hTheme, SM_CXPADDEDBORDER);
 
     /* Load fonts */
     GetThemeSysFont(hTheme, TMT_CAPTIONFONT, &scheme->ncMetrics.lfCaptionFont);
@@ -1052,7 +1057,28 @@ BOOL ActivateThemeFile(LPCWSTR pwszFile)
 
     if (pwszFile)
     {
-        ret = FindOrAppendTheme(pThemes, pwszFile, NULL, NULL, &selection);
+        WCHAR szColor[100] = {0};
+        LPCWSTR pColor = NULL;
+        HKEY hKey;
+
+        if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Microsoft\\Windows\\CurrentVersion\\ThemeManager", 0, KEY_QUERY_VALUE, &hKey) == ERROR_SUCCESS)
+        {
+            DWORD dwType = 0;
+            DWORD cbData = sizeof(szColor);
+
+            if (RegQueryValueExW(hKey, L"ColorName", NULL, &dwType, (LPBYTE)szColor, &cbData) == ERROR_SUCCESS &&
+                dwType == REG_SZ &&
+                szColor[0])
+            {
+                pColor = szColor;
+            }
+
+            RegCloseKey(hKey);
+        }
+
+        ret = FindOrAppendTheme(pThemes, pwszFile, pColor, NULL, &selection);
+        if (!ret && pColor)
+            ret = FindOrAppendTheme(pThemes, pwszFile, NULL, NULL, &selection);
         if (!ret)
             goto cleanup;
 

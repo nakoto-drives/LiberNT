@@ -34,12 +34,12 @@ Abstract:
 //
 
 #define CollectCreateHitStatistics(VCB) {                                                \
-    PFILE_SYSTEM_STATISTICS Stats = &(VCB)->Statistics[KeGetCurrentProcessorNumber() % FatData.NumberProcessors];   \
+    PFILE_SYSTEM_STATISTICS Stats = &(VCB)->Statistics[KeGetCurrentProcessorIndex() % FatData.NumberProcessors];   \
     Stats->Fat.CreateHits += 1;                                                          \
 }
 
 #define CollectCreateStatistics(VCB,STATUS) {                                            \
-    PFILE_SYSTEM_STATISTICS Stats = &(VCB)->Statistics[KeGetCurrentProcessorNumber() % FatData.NumberProcessors];   \
+    PFILE_SYSTEM_STATISTICS Stats = &(VCB)->Statistics[KeGetCurrentProcessorIndex() % FatData.NumberProcessors];   \
     if ((STATUS) == STATUS_SUCCESS) {                                                    \
         Stats->Fat.SuccessfulCreates += 1;                                               \
     } else {                                                                             \
@@ -305,7 +305,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PIRP_CONTEXT IrpContext = NULL;
 
     BOOLEAN TopLevel;
@@ -397,8 +397,9 @@ Return Value:
 #if (NTDDI_VERSION >= NTDDI_WINTHRESHOLD)
 _Requires_lock_held_(_Global_critical_region_)
 VOID
+NTAPI
 FatCommonCreateCallout (
-    _In_ PFAT_CALLOUT_PARAMETERS CalloutParameters
+    _In_ PVOID Context
     )
 
 /*++
@@ -421,6 +422,8 @@ Return Value:
 --*/
 
 {
+    PFAT_CALLOUT_PARAMETERS CalloutParameters = Context;
+
     PAGED_CODE();
 
     //
@@ -429,19 +432,19 @@ Return Value:
     //  exceptions here and deal with them.
     //
 
-    try {
+    _SEH2_TRY {
 
         CalloutParameters->IrpStatus = FatCommonCreate( CalloutParameters->Create.IrpContext,
                                                         CalloutParameters->Create.Irp );
 
-    } except (FatExceptionFilter( CalloutParameters->Create.IrpContext, GetExceptionInformation() )) {
+    } _SEH2_EXCEPT (FatExceptionFilter( CalloutParameters->Create.IrpContext, _SEH2_GetExceptionInformation() )) {
 
         //
         //  Return the resulting status.
         //
 
-        CalloutParameters->ExceptionStatus = GetExceptionCode();
-    }
+        CalloutParameters->ExceptionStatus = _SEH2_GetExceptionCode();
+    } _SEH2_END;
 
 }
 
@@ -2013,7 +2016,7 @@ Return Value:
         //  oplock that may have been granted.
         //
 
-        if ((AbnormalTermination() ||
+        if ((_SEH2_AbnormalTermination() ||
              !NT_SUCCESS( Iosb.Status )) &&
             OpenRequiringOplock &&
             (Iosb.Status != STATUS_CANNOT_BREAK_OPLOCK) &&
@@ -2323,7 +2326,7 @@ Return Value:
 --*/
 
 {
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_UNSUCCESSFUL;
     PIO_STACK_LOCATION IrpSp;
 
 #ifndef __REACTOS__
@@ -2367,7 +2370,6 @@ Return Value:
         if (!FlagOn(ShareAccess, FILE_SHARE_WRITE) &&
             !FlagOn(ShareAccess, FILE_SHARE_DELETE)) {
 
-#if (NTDDI_VERSION >= NTDDI_VISTA)
             //
             //  See if the user has requested write access.  If so, they cannot share
             //  read.  There is one exception to this.  We allow autochk to get an
@@ -2380,7 +2382,6 @@ Return Value:
 
                 ClearFlag( ShareAccess, FILE_SHARE_READ );
             }
-#endif
 
             //
             //  Do a quick check here for handles on exclusive open.
@@ -4980,7 +4981,7 @@ Return Value:
     PDIRENT FirstPageDirent = 0;
 
     PBCB SecondPageBcb = NULL;
-    ULONG SecondPageOffset;
+    ULONG SecondPageOffset = 0;
     PDIRENT SecondPageDirent = NULL;
 
     BOOLEAN DirentFromPool = FALSE;
@@ -5272,6 +5273,14 @@ Return Value:
         //
 
         FatInitializeDirectoryDirent( IrpContext, Dcb, ShortDirent );
+
+        /* Keep the still-pinned dirent in sync with the allocated directory cluster. */
+        ShortDirent->FirstClusterOfFile = (USHORT)Dcb->FirstClusterOfFile;
+        if (FatIsFat32(Vcb))
+        {
+            ShortDirent->FirstClusterOfFileHi = (USHORT)(Dcb->FirstClusterOfFile >> 16);
+        }
+        FatSetDirtyBcb( IrpContext, DirentBcb, Vcb, TRUE );
 
         //
         //  Setup the context and section object pointers, and update
@@ -6902,7 +6911,6 @@ Return Value:
 {
     PAGED_CODE();
 
-#if (NTDDI_VERSION >= NTDDI_VISTA)
     //
     //  Do an extra test for writeable user sections if the user did not allow
     //  write sharing - this is neccessary since a section may exist with no handles
@@ -6916,7 +6924,6 @@ Return Value:
 
         return STATUS_SHARING_VIOLATION;
     }
-#endif
 
     //
     //  Check if the Fcb has the proper share access.

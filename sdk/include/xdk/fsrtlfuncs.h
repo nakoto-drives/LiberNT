@@ -1,4 +1,63 @@
 $if (_NTIFS_)
+
+#if (NTDDI_VERSION >= NTDDI_WIN8)
+NTKERNELAPI
+VOID
+NTAPI
+FsRtlUpdateDiskCounters(
+  _In_ ULONG64 BytesRead,
+  _In_ ULONG64 BytesWritten);
+
+_IRQL_requires_max_(PASSIVE_LEVEL)
+NTKERNELAPI
+VOID
+NTAPI
+FsRtlDismountComplete(
+  _In_ PDEVICE_OBJECT DeviceObject,
+  _In_ NTSTATUS DismountStatus);
+
+NTKERNELAPI
+NTSTATUS
+NTAPI
+FsRtlGetSectorSizeInformation(
+  _In_ PDEVICE_OBJECT DeviceObject,
+  _Out_ PFILE_FS_SECTOR_SIZE_INFORMATION SectorSizeInfo);
+
+NTSTATUS
+FsRtlQueryKernelEaFile(
+  _In_ PFILE_OBJECT FileObject,
+  _Out_writes_bytes_to_(Length, *LengthReturned) PVOID ReturnedEaData,
+  _In_ ULONG Length,
+  _In_ BOOLEAN ReturnSingleEntry,
+  _In_reads_bytes_opt_(EaListLength) PVOID EaList,
+  _In_ ULONG EaListLength,
+  _In_opt_ PULONG EaIndex,
+  _In_ BOOLEAN RestartScan,
+  _Out_opt_ PULONG LengthReturned);
+
+NTSTATUS
+FsRtlSetKernelEaFile(
+  _In_ PFILE_OBJECT FileObject,
+  _In_reads_bytes_(Length) PVOID EaBuffer,
+  _In_ ULONG Length);
+
+_Must_inspect_result_
+_IRQL_requires_max_(APC_LEVEL)
+NTKERNELAPI
+BOOLEAN
+NTAPI
+FsRtlCheckLockForOplockRequest(
+  _In_ PFILE_LOCK FileLock,
+  _In_ PLARGE_INTEGER AllocationSize);
+
+_IRQL_requires_max_(APC_LEVEL)
+NTKERNELAPI
+BOOLEAN
+NTAPI
+FsRtlAreThereWaitingFileLocks(
+  _In_ PFILE_LOCK FileLock);
+#endif
+
 /* FSRTL Functions */
 
 #define FsRtlEnterFileSystem    KeEnterCriticalRegion
@@ -1334,6 +1393,12 @@ FsRtlAcknowledgeEcp(
   _In_ PVOID EcpContext);
 
 _IRQL_requires_max_(APC_LEVEL)
+VOID
+NTAPI
+FsRtlPrepareToReuseEcp(
+  _In_ PVOID EcpContext);
+
+_IRQL_requires_max_(APC_LEVEL)
 NTKERNELAPI
 BOOLEAN
 NTAPI
@@ -1668,7 +1733,7 @@ extern const UCHAR * const *FsRtlLegalAnsiCharacterArray;
     (PSC)->FreeCallback = (FC))
 
 #define FsRtlSupportsPerStreamContexts(FO)                                     \
-    ((BOOLEAN)((NULL != FsRtlGetPerStreamContextPointer(FO) &&                 \
+    ((BOOLEAN)((NULL != FsRtlGetPerStreamContextPointer(FO)) &&                \
                FlagOn(FsRtlGetPerStreamContextPointer(FO)->Flags2,             \
                FSRTL_FLAG2_SUPPORTS_FILTER_CONTEXTS)))
 

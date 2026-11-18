@@ -69,7 +69,7 @@ WmiQueryTraceInformation(
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NTSTATUS
-NTKRNLVISTAAPI
+NTKERNELAPI
 NTAPI
 EtwRegister(
   _In_ LPCGUID ProviderId,
@@ -79,7 +79,7 @@ EtwRegister(
 
 _IRQL_requires_max_(PASSIVE_LEVEL)
 NTSTATUS
-NTKRNLVISTAAPI
+NTKERNELAPI
 NTAPI
 EtwUnregister(
   _In_ REGHANDLE RegHandle);
@@ -112,7 +112,7 @@ EtwActivityIdControl(
 
 _IRQL_requires_max_(HIGH_LEVEL)
 NTSTATUS
-NTKRNLVISTAAPI
+NTKERNELAPI
 NTAPI
 EtwWrite(
   _In_ REGHANDLE RegHandle,
@@ -162,5 +162,57 @@ EtwWriteEx(
   _In_reads_opt_(UserDataCount) PEVENT_DATA_DESCRIPTOR UserData);
 #endif
 
+#if (NTDDI_VERSION >= NTDDI_WIN7)
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+NTAPI
+PcwRegister(
+    _Outptr_ PPCW_REGISTRATION *Registration,
+    _In_ PPCW_REGISTRATION_INFORMATION Info
+    );
+#endif
 
+#if (NTDDI_VERSION >= NTDDI_WIN7)
+_IRQL_requires_max_(APC_LEVEL)
+VOID
+NTAPI
+PcwUnregister(
+    _In_ PPCW_REGISTRATION Registration
+    );
+#endif
+
+#if (NTDDI_VERSION >= NTDDI_WIN7)
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+NTAPI
+PcwCreateInstance(
+    _Outptr_ PPCW_INSTANCE *Instance,
+    _In_ PPCW_REGISTRATION Registration,
+    _In_ PCUNICODE_STRING Name,
+    _In_ ULONG Count,
+    _In_reads_(Count) PPCW_DATA Data
+    );
+#endif
+
+#if (NTDDI_VERSION >= NTDDI_WIN7)
+_IRQL_requires_max_(APC_LEVEL)
+VOID
+NTAPI
+PcwCloseInstance(
+    _In_ PPCW_INSTANCE Instance
+    );
+#endif
+
+#if (NTDDI_VERSION >= NTDDI_WIN7)
+_IRQL_requires_max_(APC_LEVEL)
+NTSTATUS
+NTAPI
+PcwAddInstance(
+    _In_ PPCW_BUFFER Buffer,
+    _In_ PCUNICODE_STRING Name,
+    _In_ ULONG Id,
+    _In_ ULONG Count,
+    _In_reads_(Count) PPCW_DATA Data
+    );
+#endif
 

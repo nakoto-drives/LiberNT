@@ -12,7 +12,6 @@
 
 #include "shared.h"
 
-#if (NTDDI_VERSION >= NTDDI_VISTA)
 
 /*****************************************************************************
  * Constants
@@ -133,7 +132,7 @@ public:
     // This static functions is the interrupt service routine which is
     // not stream related, but services all streams at once.
     //
-    static NTSTATUS InterruptServiceRoutine
+    static NTSTATUS NTAPI InterruptServiceRoutine
     (
         IN      PINTERRUPTSYNC  InterruptSync,
         IN      PVOID           StaticContext
@@ -149,7 +148,6 @@ public:
     );
 };
 
-#endif          // (NTDDI_VERSION >= NTDDI_VISTA)
 
 #endif          // _RTMINIPORT_H_
 

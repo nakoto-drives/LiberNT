@@ -948,6 +948,15 @@ Return Value:
     (VOID)KeRemoveQueueDpc( &Vcb->CleanVolumeDpc );
 
     //
+    //  A Dpc that was already taken off its queue still reads the Vcb, and
+    //  sets the timer again when it finds dirty data.
+    //
+
+    KeFlushQueuedDpcs();
+
+    (VOID)KeCancelTimer( &Vcb->CleanVolumeTimer );
+
+    //
     //  Free the performance counters memory
     //
 
@@ -1442,6 +1451,11 @@ Return Value:
         Fcb->LastWriteTime = FatFatTimeToNtTime( IrpContext,
                                                  Dirent->LastWriteTime,
                                                  0 );
+        if (Fcb->LastWriteTime.QuadPart == 0) {
+
+            ExLocalTimeToSystemTime( &FatJanOne1980,
+                                     &Fcb->LastWriteTime );
+        }
 
         //
         //  These fields are only non-zero when in Chicago mode.
@@ -1776,6 +1790,11 @@ Return Value:
         Dcb->LastWriteTime = FatFatTimeToNtTime( IrpContext,
                                                  Dirent->LastWriteTime,
                                                  0 );
+        if (Dcb->LastWriteTime.QuadPart == 0) {
+
+            ExLocalTimeToSystemTime( &FatJanOne1980,
+                                     &Dcb->LastWriteTime );
+        }
 
         //
         //  These fields are only non-zero when in Chicago mode.
@@ -3941,5 +3960,4 @@ Return Value:
 
     return Result;
 }
-
 

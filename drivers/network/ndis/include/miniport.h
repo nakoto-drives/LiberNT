@@ -51,6 +51,7 @@ typedef struct _MINIPORT_CONFIGURATION_CONTEXT {
     NDIS_HANDLE    Handle;
     LIST_ENTRY     ResourceListHead;
     KSPIN_LOCK     ResourceLock;
+    BOOLEAN        AdapterDefaults;
 } MINIPORT_CONFIGURATION_CONTEXT, *PMINIPORT_CONFIGURATION_CONTEXT;
 
 /* Bugcheck callback context */
@@ -96,8 +97,27 @@ typedef struct _LOGICAL_ADAPTER
     HARDWARE_ADDRESS            Address;                /* Hardware address of adapter */
     ULONG                       AddressLength;          /* Length of hardware address */
     PMINIPORT_BUGCHECK_CONTEXT  BugcheckContext;        /* Adapter's shutdown handler */
-    BUS_INTERFACE_STANDARD     BusInterface;
-    BOOLEAN                    BusInterfaceQueried;
+
+    /* dev-nt6-1 branch: NDIS 6 extension fields. The flag is FALSE for
+     * legacy NDIS 5.x adapters; the void* points at a NDIS6_ADAPTER_EXT
+     * (declared in ndis6_internal.h) when the adapter is bound to an
+     * NDIS 6 miniport driver. */
+    BOOLEAN                     IsNdis6;                /* TRUE if NDIS 6 miniport */
+    PVOID                       Ndis6Context;           /* PNDIS6_ADAPTER_EXT */
+    PVOID                       WdfReserved[4];         /* NdisGetDeviceReservedExtension area
+                                                           (NDIS-WDF miniports stash their
+                                                           framework context here) */
+    KSPIN_LOCK                  HangTimerLock;          /* Serializes one-shot hang-timer ownership */
+    EX_RUNDOWN_REF              HangTimerRundown;       /* Keeps adapter alive through queued DPCs */
+    BOOLEAN                     HangTimerInitialized;
+    BOOLEAN                     HangTimerStopping;
+
+    /* Cached lookahead buffer for the legacy (NDIS_STATUS_RESOURCES) receive
+     * path. Allocated on first use and reused for the life of the adapter so
+     * the per-packet path does not call ExAllocatePool at DISPATCH_LEVEL while
+     * holding NdisMiniportBlock.Lock. Guarded by that same lock. */
+    PVOID                       LookaheadCache;
+    UINT                        LookaheadCacheSize;
 } LOGICAL_ADAPTER, *PLOGICAL_ADAPTER;
 
 #define GET_LOGICAL_ADAPTER(Handle)((PLOGICAL_ADAPTER)Handle)
@@ -162,6 +182,11 @@ MiniDoRequest(
     PLOGICAL_ADAPTER Adapter,
     PNDIS_REQUEST NdisRequest);
 
+NDIS_STATUS
+MiniStartRequest(
+    PLOGICAL_ADAPTER Adapter,
+    PNDIS_REQUEST NdisRequest);
+
 BOOLEAN
 NdisFindDevice(
     UINT   VendorID,
@@ -179,6 +204,11 @@ MiniportWorker(
     IN PVOID WorkItem);
 
 VOID NTAPI
+MiniRequestComplete(
+    IN NDIS_HANDLE MiniportAdapterHandle,
+    IN NDIS_STATUS Status);
+
+VOID NTAPI
 MiniSendComplete(
     IN  NDIS_HANDLE     MiniportAdapterHandle,
     IN  PNDIS_PACKET    Packet,
@@ -194,6 +224,27 @@ MiniReset(
     PLOGICAL_ADAPTER Adapter);
 
 VOID
+MiniStartHangTimer(
+    PLOGICAL_ADAPTER Adapter);
+
+VOID
+MiniStopHangTimer(
+    PLOGICAL_ADAPTER Adapter);
+
+VOID NTAPI
+MiniportHangDpc(
+    PKDPC Dpc,
+    PVOID DeferredContext,
+    PVOID SystemArgument1,
+    PVOID SystemArgument2);
+
+VOID NTAPI
+MiniResetComplete(
+    IN NDIS_HANDLE MiniportAdapterHandle,
+    IN NDIS_STATUS Status,
+    IN BOOLEAN AddressingReset);
+
+VOID
 MiniDoAddressingReset(
     PLOGICAL_ADAPTER Adapter);
 
@@ -201,5 +252,28 @@ VOID
 MiniWorkItemComplete(
     PLOGICAL_ADAPTER     Adapter,
     NDIS_WORK_ITEM_TYPE  WorkItemType);
+
+FORCEINLINE
+VOID
+NdisKeepFirstMultiSzString(
+    _Inout_ PUNICODE_STRING String)
+{
+    USHORT Index;
+
+    ASSERT(String->Buffer != NULL || String->Length == 0);
+    ASSERT((String->Length % sizeof(WCHAR)) == 0);
+    ASSERT(String->Length <= String->MaximumLength);
+
+    for (Index = 0; Index < String->Length / sizeof(WCHAR); Index++)
+    {
+        if (String->Buffer[Index] == UNICODE_NULL)
+        {
+            String->Length = (USHORT)(Index * sizeof(WCHAR));
+            break;
+        }
+    }
+
+    ASSERT(String->Length == 0 || String->Buffer[String->Length / sizeof(WCHAR) - 1] != UNICODE_NULL);
+}
 
 /* EOF */

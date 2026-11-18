@@ -366,7 +366,7 @@ AtaAhciCreateChannelData(
     {
         ULONG CmdStatus;
 
-        if (!(Controller->ChannelBitmap & (1 << i)))
+        if (!(Controller->ChannelBitmap & (1UL << i)))
             continue;
 
         Controller->Channels[i] = ChanData;
@@ -382,6 +382,9 @@ AtaAhciCreateChannelData(
         ChanData->StartIo = AtaAhciStartIo;
         ChanData->SetTransferMode = SataSetTransferMode;
         ChanData->TransferModeSupported = SATA_ALL;
+
+        KeInitializeTimer(&ChanData->PollingTimer);
+        KeInitializeDpc(&ChanData->PollingTimerDpc, AtaAhciPollingTimerDpc, ChanData);
 
         ChanData->IoBase = AHCI_PORT_BASE(Controller->IoBase, i);
 

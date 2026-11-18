@@ -424,11 +424,7 @@ Return Value:
         //
 
         if (!FlagOn(IrpContext->Flags, IRP_CONTEXT_FLAG_RECURSIVE_CALL) &&
-#if (NTDDI_VERSION >= NTDDI_VISTA)
             (((ExceptionCode == STATUS_VERIFY_REQUIRED) && KeAreAllApcsDisabled()) ||
-#else
-            (((ExceptionCode == STATUS_VERIFY_REQUIRED) && (KeGetCurrentIrql() >= APC_LEVEL)) ||
-#endif
              (ExceptionCode == STATUS_CANT_WAIT))) {
 
             ExceptionCode = FatFsdPostRequest( IrpContext, Irp );
@@ -1000,6 +996,7 @@ Return Value:
 {
     BOOLEAN Results = FALSE;
     IRP_CONTEXT IrpContext;
+    LARGE_INTEGER FatSystemJanOne1980;
 
     TYPE_OF_OPEN TypeOfOpen;
     PVCB Vcb;
@@ -1103,6 +1100,26 @@ Return Value:
             Buffer->FileAttributes = FILE_ATTRIBUTE_DIRECTORY;
         }
 
+        ExLocalTimeToSystemTime( &FatJanOne1980,
+                                 &FatSystemJanOne1980 );
+
+        if ((Buffer->LastWriteTime.QuadPart != 0) &&
+            (Buffer->LastWriteTime.QuadPart < FatSystemJanOne1980.QuadPart)) {
+
+            Buffer->LastWriteTime = FatSystemJanOne1980;
+        }
+
+        if ((Buffer->CreationTime.QuadPart != 0) &&
+            (Buffer->CreationTime.QuadPart < FatSystemJanOne1980.QuadPart)) {
+
+            Buffer->CreationTime = FatSystemJanOne1980;
+        }
+
+        if ((Buffer->LastAccessTime.QuadPart != 0) &&
+            (Buffer->LastAccessTime.QuadPart < FatSystemJanOne1980.QuadPart)) {
+
+            Buffer->LastAccessTime = FatSystemJanOne1980;
+        }
 
         //
         //  If the temporary flag is set, then set it in the buffer.
@@ -1573,4 +1590,3 @@ Return Value:
                                    &Fcb->FullFileName,
                                    Thread);
 }
-

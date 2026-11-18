@@ -108,7 +108,7 @@ AtaDeviceHandleRequestSense(
         /* Copy the sense data from the local buffer */
         RtlCopyMemory(Srb->SenseInfoBuffer,
                       DevExt->Device.LocalBuffer,
-                      min(Srb->SenseInfoBufferLength, ATA_LOCAL_BUFFER_SIZE));
+                      Srb->SenseInfoBufferLength);
 
         Srb->ScsiStatus = SCSISTAT_CHECK_CONDITION;
         FailedRequest->SrbStatus = SRB_STATUS_ERROR | SRB_STATUS_AUTOSENSE_VALID;
@@ -457,8 +457,8 @@ AtaDeviceCompleteFailedRequest(
 
     OldIrql = KeAcquireInterruptSpinLock(PortData->InterruptObject);
 
-    ASSERT(PortData->Worker.PausedSlotsBitmap & (1 << Request->Slot));
-    PortData->Worker.PausedSlotsBitmap &= ~(1 << Request->Slot);
+    ASSERT(PortData->Worker.PausedSlotsBitmap & (1UL << Request->Slot));
+    PortData->Worker.PausedSlotsBitmap &= ~(1UL << Request->Slot);
 
     KeReleaseInterruptSpinLock(PortData->InterruptObject, OldIrql);
 }
@@ -507,10 +507,10 @@ AtaDeviceNcqRecovery(
     }
 
     /* Find the failed queued command */
-    if (!(PortData->Worker.PausedSlotsBitmap & (1 << LogPage->NcqTag)))
+    if (!(PortData->Worker.PausedSlotsBitmap & (1UL << LogPage->NcqTag)))
     {
         ERR("Failed command %08lx not found in %08lx\n",
-             1 << LogPage->NcqTag, PortData->Worker.PausedSlotsBitmap);
+             1UL << LogPage->NcqTag, PortData->Worker.PausedSlotsBitmap);
         goto Failure;
     }
 
@@ -575,7 +575,7 @@ AtaDeviceGenericRecovery(
     _In_ PATAPORT_DEVICE_EXTENSION DevExt)
 {
     PATA_DEVICE_REQUEST Request = PortData->Worker.FailedRequest;
-    NTSTATUS Status;
+    NTSTATUS Status = STATUS_SUCCESS;
 
     switch (Request->SrbStatus)
     {

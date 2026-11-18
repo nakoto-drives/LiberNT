@@ -1,7 +1,4 @@
 
-remove_definitions(-D_WIN32_WINNT=0x502)
-add_definitions(-D_WIN32_WINNT=0x600)
-
 spec2def(snmpapi.dll snmpapi.spec ADD_IMPORTLIB)
 
 list(APPEND SOURCE
@@ -12,6 +9,6 @@ list(APPEND SOURCE
 add_library(snmpapi MODULE ${SOURCE} snmpapi.rc)
 set_module_type(snmpapi win32dll)
 target_link_libraries(snmpapi wine)
-add_importlibs(snmpapi msvcrt kernel32_vista kernel32 ntdll)
+add_importlibs(snmpapi msvcrt kernel32 ntdll)
 add_cd_file(TARGET snmpapi DESTINATION reactos/system32 FOR all)
 set_wine_module(snmpapi)

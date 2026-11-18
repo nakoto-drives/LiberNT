@@ -121,6 +121,10 @@ BOOL cf2w_to_cfany(CHARFORMAT2W *to, const CHARFORMAT2W *from)
 ME_Style *ME_MakeStyle(CHARFORMAT2W *style)
 {
   ME_Style *s = malloc(sizeof(*s));
+#ifdef __REACTOS__
+  if (!s)
+      RaiseException(STATUS_NO_MEMORY, EXCEPTION_NONCONTINUABLE, 0, NULL);
+#endif
 
   assert(style->cbSize == sizeof(CHARFORMAT2W));
   s->fmt = *style;
@@ -378,6 +382,9 @@ void select_style( ME_Context *c, ME_Style *s )
     if (s)
     {
         ME_LogFontFromStyle( c, &lf, s );
+        if (s->script_cache && !ME_IsFontEqual( &s->script_cache_font, &lf ))
+            ScriptFreeCache( &s->script_cache );
+        s->script_cache_font = lf;
 
         for (i = 0; i < HFONT_CACHE_SIZE; i++)
             c->editor->pFontCache[i].nAge++;

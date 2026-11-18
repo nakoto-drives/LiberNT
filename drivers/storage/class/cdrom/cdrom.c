@@ -1125,7 +1125,6 @@ Return Value:
 
 
 #ifdef DBG
-    #if (WINVER >= 0x0601)
     // this API is introduced in Windows7
     {
         ULONG   secondsRemaining = 0;
@@ -1134,7 +1133,6 @@ Return Value:
         watchdogTimeSupported = PoQueryWatchdogTime(deviceExtension->LowerPdo, &secondsRemaining);
         UNREFERENCED_PARAMETER(watchdogTimeSupported);
     }
-    #endif
 #endif
 
     deviceExtension->PowerDownInProgress = TRUE;
@@ -2760,7 +2758,7 @@ Return Value:
 
             status = WdfRequestRetrieveInputBuffer(Request,
                                                    RequestParameters.Parameters.DeviceIoControl.InputBufferLength,
-                                                   &exclusiveAccess,
+                                                   (PVOID*)&exclusiveAccess,
                                                    NULL);
 
             if (NT_SUCCESS(status))
@@ -2962,7 +2960,7 @@ Return Value:
 
             status = WdfRequestRetrieveInputBuffer(Request,
                                                    RequestParameters.Parameters.DeviceIoControl.InputBufferLength,
-                                                   &inputBuffer,
+                                                   (PVOID*)&inputBuffer,
                                                    NULL);
 
             if (NT_SUCCESS(status))
@@ -4239,4 +4237,3 @@ Return Value:
         NT_ASSERT(KeReadStateEvent(requestContext->SyncEvent) != 0);
     }
 }
-
